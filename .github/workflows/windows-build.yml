@@ -26,6 +26,15 @@ jobs:
           path: lib/juce
           persist-credentials: false
 
+      - name: Check out Steinberg VST3 SDK
+        uses: actions/checkout@v4
+        with:
+          repository: steinbergmedia/vst3sdk
+          ref: 82380a8faa33824123104e005bcffb0451151d88
+          path: lib/vst3sdk
+          submodules: recursive
+          persist-credentials: false
+
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
 
@@ -89,6 +98,33 @@ jobs:
             throw "Projucer failed with exit code $($projucerProcess.ExitCode)."
           }
 
+          $vst3Source = Join-Path $PWD 'lib/vst3sdk/base/source/baseiids.cpp'
+          if (-not (Test-Path $vst3Source -PathType Leaf)) {
+            throw "The VST3 SDK is missing '$vst3Source'."
+          }
+
+          $visualStudioProjectPath = Join-Path $PWD 'Builds/VisualStudio2015/Light Host.vcxproj'
+          [xml]$visualStudioProject = Get-Content $visualStudioProjectPath -Raw
+          $namespaceManager = [System.Xml.XmlNamespaceManager]::new($visualStudioProject.NameTable)
+          $namespaceManager.AddNamespace('msbuild', $visualStudioProject.DocumentElement.NamespaceURI)
+          $compileSettings = $visualStudioProject.SelectNodes(
+            '//msbuild:ItemDefinitionGroup/msbuild:ClCompile', $namespaceManager)
+          if ($compileSettings.Count -eq 0) {
+            throw 'Could not find compiler settings in the generated Visual Studio project.'
+          }
+
+          foreach ($compileSetting in $compileSettings) {
+            $includeDirectories = $compileSetting.SelectSingleNode(
+              'msbuild:AdditionalIncludeDirectories', $namespaceManager)
+            if ($null -eq $includeDirectories) {
+              $includeDirectories = $visualStudioProject.CreateElement(
+                'AdditionalIncludeDirectories', $visualStudioProject.DocumentElement.NamespaceURI)
+              $compileSetting.AppendChild($includeDirectories) | Out-Null
+            }
+            $includeDirectories.InnerText = '$(ProjectDir)..\..\lib\vst3sdk;' + $includeDirectories.InnerText
+          }
+          $visualStudioProject.Save($visualStudioProjectPath)
+
       - name: Build Light Host
         run: >-
           msbuild "Builds/VisualStudio2015/Light Host.sln"
@@ -98,10 +134,20 @@ jobs:
           -p:PlatformToolset=v143
           -p:WindowsTargetPlatformVersion=10.0
 
+      - name: Prepare distributable
+        shell: pwsh
+        run: |
+          $distributionDirectory = Join-Path $PWD 'dist'
+          New-Item -ItemType Directory -Path $distributionDirectory | Out-Null
+          Copy-Item 'Builds/VisualStudio2015/x64/Release/Light Host.exe' $distributionDirectory
+          Copy-Item 'license' $distributionDirectory
+          Copy-Item 'gpl.txt' $distributionDirectory
+          Copy-Item 'lib/vst3sdk/LICENSE.txt' (Join-Path $distributionDirectory 'VST3-SDK-LICENSE.txt')
+
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
           name: LightHost-Windows-x64
-          path: Builds/VisualStudio2015/x64/Release/Light Host.exe
+          path: dist/*
           if-no-files-found: error
           retention-days: 7

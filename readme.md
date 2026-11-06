@@ -15,7 +15,7 @@ Right-click the Light Host tray icon and choose **Export Settings...** to save t
 
 The **Build Windows executable** GitHub Actions workflow builds a 64-bit Windows executable on a hosted Windows runner when changes are pushed to `master`, or when started manually from the repository's **Actions** tab. Download the `LightHost-Windows-x64` artifact from a completed run. Artifacts are kept for 7 days.
 
-The workflow builds against JUCE 4.2.4 and disables ASIO because the separately licensed Steinberg ASIO SDK is not included. Other configured Windows audio APIs remain enabled.
+The workflow builds against JUCE 4.2.4 and Steinberg VST3 SDK 3.6.12, retaining VST3 hosting. ASIO is disabled because its separate SDK is not included. The artifact includes the executable and applicable license files.
 
 ### Screenshot
 
