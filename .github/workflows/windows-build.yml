@@ -98,9 +98,22 @@ jobs:
             throw "Projucer failed with exit code $($projucerProcess.ExitCode)."
           }
 
-          $vst3Source = Join-Path $PWD 'lib/vst3sdk/base/source/baseiids.cpp'
-          if (-not (Test-Path $vst3Source -PathType Leaf)) {
-            throw "The VST3 SDK is missing '$vst3Source'."
+          $vst3Headers = @(
+            'base/source/fstring.h',
+            'pluginterfaces/base/conststringtable.h',
+            'pluginterfaces/base/funknown.h',
+            'pluginterfaces/base/ipluginbase.h',
+            'pluginterfaces/base/ustring.h',
+            'pluginterfaces/gui/iplugview.h',
+            'pluginterfaces/vst/ivstmidicontrollers.h',
+            'public.sdk/source/common/memorystream.h',
+            'public.sdk/source/vst/vsteditcontroller.h'
+          )
+          foreach ($header in $vst3Headers) {
+            $headerPath = Join-Path $PWD "lib/vst3sdk/$header"
+            if (-not (Test-Path $headerPath -PathType Leaf)) {
+              throw "The VST3 SDK is missing required header '$headerPath'."
+            }
           }
 
           $visualStudioProjectPath = Join-Path $PWD 'Builds/VisualStudio2015/Light Host.vcxproj'
@@ -122,6 +135,18 @@ jobs:
               $compileSetting.AppendChild($includeDirectories) | Out-Null
             }
             $includeDirectories.InnerText = '$(ProjectDir)..\..\lib\vst3sdk;' + $includeDirectories.InnerText
+
+            $preprocessorDefinitions = $compileSetting.SelectSingleNode(
+              'msbuild:PreprocessorDefinitions', $namespaceManager)
+            if ($null -eq $preprocessorDefinitions) {
+              $preprocessorDefinitions = $visualStudioProject.CreateElement(
+                'PreprocessorDefinitions', $visualStudioProject.DocumentElement.NamespaceURI)
+              $compileSetting.AppendChild($preprocessorDefinitions) | Out-Null
+            }
+            if (-not $preprocessorDefinitions.InnerText.Contains('JUCE_VST3HEADERS_INCLUDE_HEADERS_ONLY')) {
+              $preprocessorDefinitions.InnerText =
+                'JUCE_VST3HEADERS_INCLUDE_HEADERS_ONLY=1;' + $preprocessorDefinitions.InnerText
+            }
           }
           $visualStudioProject.Save($visualStudioProjectPath)
 
