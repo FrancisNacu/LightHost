@@ -50,15 +50,43 @@ jobs:
 
           $projectPath = Join-Path $PWD 'LightHost.jucer'
           $projectXml = Get-Content $projectPath -Raw
+          $modulePathPattern = '(<MODULEPATH\b[^>]*\bpath=")lib[\\/]+juce(")'
+          $modulePathCount = [regex]::Matches($projectXml, $modulePathPattern).Count
+          if ($modulePathCount -eq 0) {
+            throw 'Could not find the JUCE module paths to update.'
+          }
+          $projectXml = [regex]::Replace($projectXml, $modulePathPattern, '$1lib/juce/modules$2')
+          [xml]$validatedProject = $projectXml
+          foreach ($modulePath in $validatedProject.SelectNodes('//MODULEPATH')) {
+            $moduleDirectory = Join-Path $PWD $modulePath.GetAttribute('path')
+            $moduleHeader = Join-Path $moduleDirectory $modulePath.GetAttribute('id')
+            if (-not (Test-Path $moduleHeader -PathType Container)) {
+              throw "JUCE module '$($modulePath.GetAttribute('id'))' is missing at '$moduleHeader'."
+            }
+          }
+          Write-Host "Validated $modulePathCount JUCE module paths."
+
           if (-not $projectXml.Contains('JUCE_ASIO="enabled"')) {
             throw 'Could not find the expected JUCE_ASIO setting.'
           }
           $projectXml = $projectXml.Replace('JUCE_ASIO="enabled"', 'JUCE_ASIO="disabled"')
           Set-Content -Path $projectPath -Value $projectXml -Encoding utf8
 
-          & $projucer.FullName --resave $projectPath
-          if ($LASTEXITCODE -ne 0) {
-            throw "Projucer failed with exit code $LASTEXITCODE."
+          $projucerStdout = Join-Path $env:RUNNER_TEMP 'projucer.stdout.log'
+          $projucerStderr = Join-Path $env:RUNNER_TEMP 'projucer.stderr.log'
+          $projucerProcess = Start-Process -FilePath $projucer.FullName `
+            -ArgumentList @('--resave', "`"$projectPath`"") `
+            -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput $projucerStdout `
+            -RedirectStandardError $projucerStderr
+          if (Test-Path $projucerStdout) {
+            Get-Content $projucerStdout
+          }
+          if (Test-Path $projucerStderr) {
+            Get-Content $projucerStderr
+          }
+          if ($projucerProcess.ExitCode -ne 0) {
+            throw "Projucer failed with exit code $($projucerProcess.ExitCode)."
           }
 
       - name: Build Light Host
