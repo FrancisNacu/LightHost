@@ -1,0 +1,79 @@
+name: Build Windows executable
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Check out Light Host
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check out JUCE 4.2.4
+        uses: actions/checkout@v4
+        with:
+          repository: juce-framework/JUCE
+          ref: 680d75807accebce075850cbdd302ccf6c56e8f2
+          path: lib/juce
+          persist-credentials: false
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Projucer
+        run: >-
+          msbuild lib/juce/extras/Projucer/Builds/VisualStudio2015/Projucer.sln
+          -m
+          -p:Configuration=Release
+          -p:Platform=x64
+          -p:PlatformToolset=v143
+          -p:WindowsTargetPlatformVersion=10.0
+
+      - name: Generate the Visual Studio project
+        shell: pwsh
+        run: |
+          $projucer = Get-ChildItem 'lib/juce/extras/Projucer/Builds/VisualStudio2015' -Filter 'Projucer.exe' -File -Recurse |
+            Where-Object { $_.FullName -match '\\x64\\Release\\' } |
+            Select-Object -First 1
+          if ($null -eq $projucer) {
+            throw 'The Projucer executable was not produced.'
+          }
+
+          $projectPath = Join-Path $PWD 'LightHost.jucer'
+          $projectXml = Get-Content $projectPath -Raw
+          if (-not $projectXml.Contains('JUCE_ASIO="enabled"')) {
+            throw 'Could not find the expected JUCE_ASIO setting.'
+          }
+          $projectXml = $projectXml.Replace('JUCE_ASIO="enabled"', 'JUCE_ASIO="disabled"')
+          Set-Content -Path $projectPath -Value $projectXml -Encoding utf8
+
+          & $projucer.FullName --resave $projectPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Projucer failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Build Light Host
+        run: >-
+          msbuild "Builds/VisualStudio2015/Light Host.sln"
+          -m
+          -p:Configuration=Release
+          -p:Platform=x64
+          -p:PlatformToolset=v143
+          -p:WindowsTargetPlatformVersion=10.0
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: LightHost-Windows-x64
+          path: Builds/VisualStudio2015/x64/Release/Light Host.exe
+          if-no-files-found: error
+          retention-days: 7

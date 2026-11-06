@@ -42,7 +42,8 @@ public:
 
 	~PluginListWindow()
 	{
-		getAppProperties().getUserSettings()->setValue("listWindowPos", getWindowStateAsString());
+		if (!owner.settingsImported)
+			getAppProperties().getUserSettings()->setValue("listWindowPos", getWindowStateAsString());
 
 		clearContentComponent();
 	}
@@ -63,6 +64,7 @@ private:
 IconMenu::IconMenu() : INDEX_EDIT(1000000), INDEX_BYPASS(2000000), INDEX_DELETE(3000000), INDEX_MOVE_UP(4000000), INDEX_MOVE_DOWN(5000000)
 {
     // Initiialization
+	settingsImported = false;
     formatManager.addDefaultFormats();
 	#if JUCE_WINDOWS
 	x = y = 0;
@@ -273,6 +275,8 @@ void IconMenu::timerCallback()
         menu.addItem(1, "Quit");
 		menu.addSeparator();
 		menu.addItem(2, "Delete Plugin States");
+        menu.addItem(4, "Export Settings...");
+        menu.addItem(5, "Import Settings...");
 		#if !JUCE_MAC
 			menu.addItem(3, "Invert Icon Color");
 		#endif
@@ -324,6 +328,14 @@ void IconMenu::menuInvocationCallback(int id, IconMenu* im)
 			String color = getAppProperties().getUserSettings()->getValue("icon");
 			getAppProperties().getUserSettings()->setValue("icon", color.equalsIgnoreCase("black") ? "white" : "black");
 			return im->setIcon();
+		}
+		if (id == 4)
+			return im->exportSettings();
+		if (id == 5)
+		{
+			if (im->importSettings())
+				JUCEApplication::getInstance()->quit();
+			return;
 		}
     }
 	#if JUCE_MAC
@@ -474,6 +486,9 @@ void IconMenu::deletePluginStates()
 
 void IconMenu::savePluginStates()
 {
+	if (settingsImported)
+		return;
+
 	std::vector<PluginDescription> list = getTimeSortedList();
     for (int i = 0; i < activePluginList.getNumTypes(); i++)
     {
@@ -487,6 +502,78 @@ void IconMenu::savePluginStates()
         getAppProperties().getUserSettings()->setValue(pluginUid, savedStateBinary.toBase64Encoding());
         getAppProperties().saveIfNeeded();
     }
+}
+
+void IconMenu::exportSettings()
+{
+	PropertiesFile* settings = getAppProperties().getUserSettings();
+	savePluginStates();
+
+	ScopedPointer<XmlElement> audioState(deviceManager.createStateXml());
+	settings->setValue("audioDeviceState", audioState);
+	if (!settings->saveIfNeeded())
+	{
+		AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Export Settings",
+			"Could not save the current settings.");
+		return;
+	}
+
+	const File settingsFile = settings->getFile();
+	FileChooser chooser("Export Light Host settings",
+		settingsFile.getSiblingFile("Light Host.settings"), "*.settings");
+	if (!chooser.browseForFileToSave(true))
+		return;
+
+	const File destination = chooser.getResult();
+	if (destination == settingsFile || !settingsFile.copyFileTo(destination))
+		AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Export Settings",
+			"Could not export the settings file.");
+}
+
+bool IconMenu::importSettings()
+{
+	FileChooser chooser("Import Light Host settings", File::getSpecialLocation(File::userHomeDirectory),
+		"*.settings");
+	if (!chooser.browseForFileToOpen())
+		return false;
+
+	ScopedPointer<XmlElement> xml(XmlDocument::parse(chooser.getResult()));
+	if (xml == nullptr || !xml->hasTagName("PROPERTIES"))
+	{
+		AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Import Settings",
+			"The selected file is not a valid Light Host settings file.");
+		return false;
+	}
+
+	if (!AlertWindow::showOkCancelBox(AlertWindow::QuestionIcon, "Import Settings",
+		"This will replace your current Light Host settings. Continue?",
+		"Import", "Cancel"))
+		return false;
+
+	PropertySet importedSettings;
+	importedSettings.restoreFromXml(*xml);
+
+	PropertiesFile* settings = getAppProperties().getUserSettings();
+	PropertySet previousSettings;
+	previousSettings.addAllPropertiesFrom(*settings);
+	settings->clear();
+	settings->addAllPropertiesFrom(importedSettings);
+
+	if (!settings->saveIfNeeded())
+	{
+		settings->clear();
+		settings->addAllPropertiesFrom(previousSettings);
+		const bool restored = settings->saveIfNeeded();
+		AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Import Settings",
+			restored ? "Could not save the imported settings. Your previous settings were restored."
+				: "Could not save the imported settings or restore the previous settings.");
+		return false;
+	}
+
+	settingsImported = true;
+	AlertWindow::showMessageBox(AlertWindow::InfoIcon, "Import Settings",
+		"Settings imported. Light Host will now close; reopen it to apply the imported settings.");
+	return true;
 }
 
 void IconMenu::showAudioSettings()

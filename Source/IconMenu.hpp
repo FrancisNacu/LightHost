@@ -32,6 +32,8 @@ private:
     void loadActivePlugins();
     void savePluginStates();
     void deletePluginStates();
+    void exportSettings();
+    bool importSettings();
 	PluginDescription getNextPluginOlderThanTime(int &time);
 	void removePluginsLackingInputOutput();
 	std::vector<PluginDescription> getTimeSortedList();
@@ -45,6 +47,7 @@ private:
     PopupMenu menu;
     ScopedPointer<PluginDirectoryScanner> scanner;
     bool menuIconLeftClicked;
+    bool settingsImported;
     AudioProcessorGraph graph;
     AudioProcessorPlayer player;
     AudioProcessorGraph::Node *inputNode;
