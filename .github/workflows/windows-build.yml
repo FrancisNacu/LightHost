@@ -98,6 +98,36 @@ jobs:
             throw "Projucer failed with exit code $($projucerProcess.ExitCode)."
           }
 
+          $juceVst3HeaderPath = Join-Path $PWD 'JuceLibraryCode/modules/juce_audio_processors/format_types/juce_VST3Headers.h'
+          $juceVst3Header = Get-Content $juceVst3HeaderPath -Raw
+          $compatibilityAnchor = '(?m)(#include <public\.sdk/source/vst/vsteditcontroller\.h>\r?\n)(#else)'
+          $compatibilityCount = [regex]::Matches($juceVst3Header, $compatibilityAnchor).Count
+          if ($compatibilityCount -ne 1) {
+            throw 'Could not locate the JUCE VST3 headers-only compatibility insertion point.'
+          }
+          $compatibilityDefinitions = @(
+            ' #ifndef kStringBFormat1stOrderS',
+            '  #define kStringBFormat1stOrderS kStringAmbi1stOrderS',
+            ' #endif',
+            ' #ifndef kString90S',
+            '  #define kString90S kString50_4S',
+            ' #endif',
+            ' #ifndef kString91S',
+            '  #define kString91S kString51_4S',
+            ' #endif',
+            ' #ifndef kString90',
+            '  #define kString90 kString50_4',
+            ' #endif',
+            ' #ifndef kString91',
+            '  #define kString91 kString51_4',
+            ' #endif'
+          ) -join "`r`n"
+          $juceVst3Header = [regex]::Replace($juceVst3Header, $compatibilityAnchor, "`$1$compatibilityDefinitions`r`n`$2")
+          Set-Content -Path $juceVst3HeaderPath -Value $juceVst3Header -Encoding utf8
+          if (-not (Select-String -Path $juceVst3HeaderPath -Pattern '#define kString90S kString50_4S' -Quiet)) {
+            throw 'The JUCE VST3 speaker-layout compatibility mappings were not applied.'
+          }
+
           $vst3Headers = @(
             'base/source/fstring.h',
             'pluginterfaces/base/conststringtable.h',
