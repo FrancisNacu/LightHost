@@ -9,6 +9,7 @@
 #include "../JuceLibraryCode/JuceHeader.h"
 #include "IconMenu.hpp"
 #include "PluginWindow.h"
+#include "PluginChain.h"
 #include <algorithm>
 #include <ctime>
 #include <functional>
@@ -17,8 +18,6 @@
 #if JUCE_WINDOWS
 #include "Windows.h"
 #endif
-
-class IconMenu::PluginManagementComponent;
 
 namespace
 {
@@ -846,14 +845,8 @@ public:
 		activeEmptyState.setInterceptsMouseClicks(false, false);
 		addAndMakeVisible(activeEmptyState);
 
-		Button* const buttons[] = {
-			&addButton
-		};
-		for (int i = 0; i < (int) numElementsInArray(buttons); ++i)
-		{
-			addAndMakeVisible(buttons[i]);
-			buttons[i]->addListener(this);
-		}
+		addAndMakeVisible(addButton);
+		addButton.addListener(this);
 
 		refreshActivePlugins();
 		setSize(1000, 600);
@@ -861,6 +854,7 @@ public:
 
 	void refreshActivePlugins()
 	{
+		activePluginRows = owner.getOrderedActivePlugins();
 		activePlugins.updateContent();
 		activeEmptyState.setVisible(owner.activePluginList.getNumTypes() == 0);
 		updateAddButton();
@@ -926,13 +920,13 @@ public:
 private:
 	int getNumRows() override
 	{
-		return owner.activePluginList.getNumTypes();
+		return (int) activePluginRows.size();
 	}
 
 	void paintListBoxItem(int row, Graphics& graphics, int width, int height,
 		bool rowIsSelected) override
 	{
-		if (row < 0 || row >= owner.activePluginList.getNumTypes())
+		if (row < 0 || row >= (int) activePluginRows.size())
 			return;
 
 		if (rowIsSelected)
@@ -942,7 +936,7 @@ private:
 		else
 			graphics.fillAll(findColour(ListBox::backgroundColourId));
 
-		const std::vector<PluginDescription> plugins = owner.getTimeSortedList();
+		const std::vector<PluginDescription>& plugins = activePluginRows;
 		const String displayName = getDisplayNameForPlugin (plugins[row]);
 		String name = String(row + 1) + ". " + displayName;
 		const bool bypassed = getAppProperties().getUserSettings()->getBoolValue(
@@ -1045,7 +1039,7 @@ private:
 
 	void confirmRemovePlugin(int row)
 	{
-		const std::vector<PluginDescription> plugins = owner.getTimeSortedList();
+		const std::vector<PluginDescription> plugins = owner.getOrderedActivePlugins();
 		if (row < 0 || row >= (int) plugins.size())
 			return;
 
@@ -1083,7 +1077,7 @@ private:
 
 	void renamePlugin (int row)
 	{
-		const std::vector<PluginDescription> plugins = owner.getTimeSortedList();
+		const std::vector<PluginDescription> plugins = owner.getOrderedActivePlugins();
 		if (row < 0 || row >= (int) plugins.size())
 			return;
 
@@ -1127,7 +1121,7 @@ private:
 
 		if (hoveredAction == bypassActivePluginAction)
 		{
-			const std::vector<PluginDescription> plugins = owner.getTimeSortedList();
+			const std::vector<PluginDescription> plugins = owner.getOrderedActivePlugins();
 			if (row >= 0 && row < (int) plugins.size()
 				&& getAppProperties().getUserSettings()->getBoolValue(
 					IconMenu::getKey("bypass", plugins[row])))
@@ -1159,7 +1153,7 @@ private:
 			return var();
 
 		const int row = rowsToDescribe[0];
-		const std::vector<PluginDescription> plugins = owner.getTimeSortedList();
+		const std::vector<PluginDescription> plugins = owner.getOrderedActivePlugins();
 		if (row < 0 || row >= (int) plugins.size())
 			return var();
 
@@ -1198,7 +1192,7 @@ private:
 
 		const String pluginOrderKey = description.substring(
 			String(activePluginDragPrefix).length());
-		const std::vector<PluginDescription> plugins = owner.getTimeSortedList();
+		const std::vector<PluginDescription> plugins = owner.getOrderedActivePlugins();
 		int fromIndex = -1;
 		for (int i = 0; i < (int) plugins.size(); ++i)
 			if (pluginOrderKey == IconMenu::getKey("order", plugins[i]))
@@ -1328,6 +1322,7 @@ private:
 	IconMenu& owner;
 	GroupComponent activeGroup, availableGroup;
 	Label activeEmptyState, bypassHeading;
+	std::vector<PluginDescription> activePluginRows;
 	ListBox activePlugins;
 	TextButton addButton;
 	ScopedPointer<PluginListComponent> availablePlugins;
@@ -1349,7 +1344,7 @@ public:
     };
 
     explicit LightHostMainWindowContent (IconMenu& owner_)
-        : owner (owner_), currentView (pluginsView)
+        : owner (owner_)
     {
         setOpaque (true);
 
@@ -1394,11 +1389,9 @@ public:
         addAndMakeVisible (readyDot);
 
         pluginsPanel = new IconMenu::PluginManagementComponent (owner);
-        settingsPanel = new LightHostSettingsView (owner);
         aboutPanel = new LightHostAboutView();
 
         addAndMakeVisible (pluginsPanel);
-        addAndMakeVisible (settingsPanel);
         addAndMakeVisible (aboutPanel);
 
         setView (pluginsView);
@@ -1406,21 +1399,26 @@ public:
 
     void setView (ViewType newView)
     {
-        currentView = newView;
         pluginsButton.setToggleState (newView == pluginsView, dontSendNotification);
         settingsButton.setToggleState (newView == settingsView, dontSendNotification);
         aboutButton.setToggleState (newView == aboutView, dontSendNotification);
 
         pluginsPanel->setVisible (newView == pluginsView);
-        settingsPanel->setVisible (newView == settingsView);
+        if (newView == settingsView && settingsPanel == nullptr)
+        {
+            settingsPanel = new LightHostSettingsView(owner);
+            addChildComponent(settingsPanel);
+            resized();
+        }
+        if (settingsPanel != nullptr)
+            settingsPanel->setVisible(newView == settingsView);
         aboutPanel->setVisible (newView == aboutView);
         repaint();
     }
 
     void refreshActivePlugins()
     {
-        if (auto* management = dynamic_cast<IconMenu::PluginManagementComponent*> (pluginsPanel.get()))
-            management->refreshActivePlugins();
+        pluginsPanel->refreshActivePlugins();
     }
 
     void paint (Graphics& g) override
@@ -1453,7 +1451,8 @@ public:
 
         const juce::Rectangle<int> contentArea (bodyArea.reduced (12, 12));
         pluginsPanel->setBounds (contentArea);
-        settingsPanel->setBounds (contentArea);
+        if (settingsPanel != nullptr)
+            settingsPanel->setBounds (contentArea);
         aboutPanel->setBounds (contentArea);
     }
 
@@ -1469,13 +1468,12 @@ public:
 
 private:
     IconMenu& owner;
-    ViewType currentView;
     ImageComponent icon;
     Label titleBar;
     TextButton pluginsButton, settingsButton, aboutButton;
     Label readyStatus;
     StatusDotComponent readyDot;
-    ScopedPointer<Component> pluginsPanel;
+    ScopedPointer<IconMenu::PluginManagementComponent> pluginsPanel;
     ScopedPointer<Component> settingsPanel;
     ScopedPointer<Component> aboutPanel;
 };
@@ -1486,7 +1484,7 @@ public:
 	explicit PluginListWindow(IconMenu& owner_)
 		: DocumentWindow("Light Host", Colours::white,
 			DocumentWindow::minimiseButton | DocumentWindow::closeButton),
-		owner(owner_), content(new LightHostMainWindowContent(owner_))
+		content(new LightHostMainWindowContent(owner_))
 	{
 		setContentOwned(content, true);
 		setUsingNativeTitleBar(true);
@@ -1511,44 +1509,18 @@ public:
 		toFront(true);
 	}
 
-	void showSettingsView()
-	{
-		if (content != nullptr)
-			content->setView(LightHostMainWindowContent::settingsView);
-		setVisible(true);
-		toFront(true);
-	}
-
-	void showAboutView()
-	{
-		if (content != nullptr)
-			content->setView(LightHostMainWindowContent::aboutView);
-		setVisible(true);
-		toFront(true);
-	}
-
-	~PluginListWindow()
-	{
-		if (!owner.settingsImported)
-			getAppProperties().getUserSettings()->setValue("listWindowPos", getWindowStateAsString());
-
-		clearContentComponent();
-		content = nullptr;
-	}
-
 	void closeButtonPressed()
 	{
 		setVisible(false);
 	}
 
 private:
-	IconMenu& owner;
-	ScopedPointer<LightHostMainWindowContent> content;
+	LightHostMainWindowContent* content; // Owned by DocumentWindow.
 };
 
-IconMenu::IconMenu() : INDEX_EDIT(1000000), INDEX_BYPASS(2000000), INDEX_DELETE(3000000), INDEX_MOVE_UP(4000000), INDEX_MOVE_DOWN(5000000)
+IconMenu::IconMenu() : INDEX_EDIT(1000000), INDEX_BYPASS(2000000), INDEX_DELETE(3000000)
 {
-    // Initiialization
+    // Initialization
 	settingsImported = false;
 	lastLeftClickTime = 0;
     formatManager.addDefaultFormats();
@@ -1580,6 +1552,11 @@ IconMenu::~IconMenu()
 	deviceManager.removeAudioCallback(&player);
 	PluginWindow::closeAllCurrentlyOpenWindows();
 	pluginListWindow = nullptr;
+    if (!settingsImported)
+    {
+        ScopedPointer<XmlElement> audioState(deviceManager.createStateXml());
+        getAppProperties().getUserSettings()->setValue("audioDeviceState", audioState);
+    }
 	savePluginStates();
 	player.setProcessor(nullptr);
 }
@@ -1622,29 +1599,23 @@ void IconMenu::toggleIconColor()
 
 void IconMenu::loadActivePlugins()
 {
-	const int INPUT = 1000000;
-	const int OUTPUT = INPUT + 1;
-	const int CHANNEL_ONE = 0;
-	const int CHANNEL_TWO = 1;
 	PluginWindow::closeAllCurrentlyOpenWindows();
 	player.setProcessor(nullptr);
     graph.clear();
-    inputNode = graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioInputNode), INPUT);
-    outputNode = graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioOutputNode), OUTPUT);
-    if (activePluginList.getNumTypes() == 0)
-    {
-        graph.addConnection(INPUT, CHANNEL_ONE, OUTPUT, CHANNEL_ONE);
-        graph.addConnection(INPUT, CHANNEL_TWO, OUTPUT, CHANNEL_TWO);
-    }
-	int pluginTime = 0;
-	int lastId = 0;
-	bool hasInputConnected = false;
+    graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioInputNode), PluginChain::inputNodeId);
+    graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioOutputNode), PluginChain::outputNodeId);
+	const std::vector<PluginDescription> plugins = getOrderedActivePlugins();
 	// NOTE: Node ids cannot begin at 0.
-    for (int i = 1; i <= activePluginList.getNumTypes(); i++)
+    for (int i = 1; i <= (int) plugins.size(); i++)
     {
-        PluginDescription plugin = getNextPluginOlderThanTime(pluginTime);
+        const PluginDescription& plugin = plugins[i - 1];
         String errorMessage;
         AudioPluginInstance* instance = formatManager.createPluginInstance(plugin, graph.getSampleRate(), graph.getBlockSize(), errorMessage);
+        if (instance == nullptr)
+        {
+            Logger::writeToLog("Could not load plugin " + plugin.name + ": " + errorMessage);
+            continue;
+        }
 		String pluginUid = getKey("state", plugin);
         String savedPluginState = getAppProperties().getUserSettings()->getValue(pluginUid);
         MemoryBlock savedPluginBinary;
@@ -1656,52 +1627,17 @@ void IconMenu::loadActivePlugins()
             instance->setStateInformation(savedPluginBinary.getData(),
                 static_cast<int>(savedPluginStateSize));
         graph.addNode(instance, i);
-		String key = getKey("bypass", plugin);
-		bool bypass = getAppProperties().getUserSettings()->getBoolValue(key, false);
-        // Input to plugin
-        if ((!hasInputConnected) && (!bypass))
-        {
-            graph.addConnection(INPUT, CHANNEL_ONE, i, CHANNEL_ONE);
-            graph.addConnection(INPUT, CHANNEL_TWO, i, CHANNEL_TWO);
-			hasInputConnected = true;
-        }
-        // Connect previous plugin to current
-        else if (!bypass)
-        {
-            graph.addConnection(lastId, CHANNEL_ONE, i, CHANNEL_ONE);
-            graph.addConnection(lastId, CHANNEL_TWO, i, CHANNEL_TWO);
-        }
-		if (!bypass)
-			lastId = i;
     }
-	if (lastId > 0)
-	{
-		// Last active plugin to output
-		graph.addConnection(lastId, CHANNEL_ONE, OUTPUT, CHANNEL_ONE);
-		graph.addConnection(lastId, CHANNEL_TWO, OUTPUT, CHANNEL_TWO);
-	}
+    updatePluginConnections();
 	player.setProcessor(&graph);
 }
 
-PluginDescription IconMenu::getNextPluginOlderThanTime(int &time)
+void IconMenu::updatePluginConnections()
 {
-	int timeStatic = time;
-	PluginDescription closest;
-	int diff = INT_MAX;
-	for (int i = 0; i < activePluginList.getNumTypes(); i++)
-	{
-		PluginDescription plugin = *activePluginList.getType(i);
-		String key = getKey("order", plugin);
-		String pluginTimeString = getAppProperties().getUserSettings()->getValue(key);
-		int pluginTime = atoi(pluginTimeString.toStdString().c_str());
-		if (pluginTime > timeStatic && abs(timeStatic - pluginTime) < diff)
-		{
-			diff = abs(timeStatic - pluginTime);
-			closest = plugin;
-			time = pluginTime;
-		}
-	}
-	return closest;
+    const std::vector<PluginDescription> plugins = getOrderedActivePlugins();
+    PropertiesFile* settings = getAppProperties().getUserSettings();
+    PluginChain::reconnect(graph, (int) plugins.size(),
+        [&](int index) { return settings->getBoolValue(getKey("bypass", plugins[index])); });
 }
 
 void IconMenu::changeListenerCallback(ChangeBroadcaster* changed)
@@ -1877,7 +1813,7 @@ void IconMenu::addPluginToActiveList(const PluginDescription& plugin)
 
 void IconMenu::moveActivePlugin(int fromIndex, int toIndex)
 {
-	std::vector<PluginDescription> plugins = getTimeSortedList();
+	std::vector<PluginDescription> plugins = getOrderedActivePlugins();
 	if (fromIndex < 0 || fromIndex >= (int) plugins.size()
 		|| toIndex < 0 || toIndex >= (int) plugins.size()
 		|| fromIndex == toIndex)
@@ -1903,7 +1839,7 @@ void IconMenu::performPluginAction(int id)
 	if (id >= INDEX_DELETE && id < INDEX_DELETE + 1000000)
 	{
 		const int index = id - INDEX_DELETE;
-		std::vector<PluginDescription> plugins = getTimeSortedList();
+		std::vector<PluginDescription> plugins = getOrderedActivePlugins();
 		if (index < 0 || index >= (int) plugins.size())
 			return;
 
@@ -1932,7 +1868,7 @@ void IconMenu::performPluginAction(int id)
 	else if (id >= INDEX_BYPASS && id < INDEX_BYPASS + 1000000)
 	{
 		const int index = id - INDEX_BYPASS;
-		std::vector<PluginDescription> plugins = getTimeSortedList();
+		std::vector<PluginDescription> plugins = getOrderedActivePlugins();
 		if (index < 0 || index >= (int) plugins.size())
 			return;
 
@@ -1940,8 +1876,7 @@ void IconMenu::performPluginAction(int id)
 		PropertiesFile* settings = getAppProperties().getUserSettings();
 		settings->setValue(key, !settings->getBoolValue(key));
 		settings->saveIfNeeded();
-		savePluginStates();
-		loadActivePlugins();
+		updatePluginConnections();
 	}
 	else if (id >= INDEX_EDIT && id < INDEX_EDIT + 1000000)
 	{
@@ -1950,32 +1885,37 @@ void IconMenu::performPluginAction(int id)
 			if (PluginWindow* const window = PluginWindow::getWindowFor(node, PluginWindow::Normal))
 				window->toFront(true);
 	}
-	else if (id >= INDEX_MOVE_UP && id < INDEX_MOVE_UP + 1000000)
-	{
-		const int index = id - INDEX_MOVE_UP;
-		moveActivePlugin(index, index - 1);
-	}
-	else if (id >= INDEX_MOVE_DOWN && id < INDEX_MOVE_DOWN + 1000000)
-	{
-		const int index = id - INDEX_MOVE_DOWN;
-		moveActivePlugin(index, index + 1);
-	}
 
 	if (pluginListWindow != nullptr)
 		pluginListWindow->refreshActivePlugins();
 }
 
-std::vector<PluginDescription> IconMenu::getTimeSortedList()
+std::vector<PluginDescription> IconMenu::getOrderedActivePlugins()
 {
-	int time = 0;
-	std::vector<PluginDescription> list;
-	for (int i = 0; i < activePluginList.getNumTypes(); i++)
-		list.push_back(getNextPluginOlderThanTime(time));
-	return list;
-		
+    struct OrderedPlugin
+    {
+        PluginDescription plugin;
+        int order;
+    };
+    std::vector<OrderedPlugin> ordered;
+    ordered.reserve(activePluginList.getNumTypes());
+    PropertiesFile* settings = getAppProperties().getUserSettings();
+    for (int i = 0; i < activePluginList.getNumTypes(); ++i)
+    {
+        const PluginDescription& plugin = *activePluginList.getType(i);
+        ordered.push_back({ plugin, settings->getIntValue(getKey("order", plugin)) });
+    }
+    // Keep plugins with duplicate or missing order values in their original order.
+    std::stable_sort(ordered.begin(), ordered.end(),
+        [](const OrderedPlugin& a, const OrderedPlugin& b) { return a.order < b.order; });
+    std::vector<PluginDescription> list;
+    list.reserve(ordered.size());
+    for (const auto& entry : ordered)
+        list.push_back(entry.plugin);
+    return list;
 }
 
-String IconMenu::getKey(String type, PluginDescription plugin)
+String IconMenu::getKey(const String& type, const PluginDescription& plugin)
 {
 	String key = "plugin-" + type.toLowerCase() + "-" + plugin.name + plugin.version + plugin.pluginFormatName;
 	return key;
@@ -1983,13 +1923,13 @@ String IconMenu::getKey(String type, PluginDescription plugin)
 
 void IconMenu::deletePluginStates()
 {
-	std::vector<PluginDescription> list = getTimeSortedList();
+	std::vector<PluginDescription> list = getOrderedActivePlugins();
     for (int i = 0; i < activePluginList.getNumTypes(); i++)
     {
 		String pluginUid = getKey("state", list[i]);
         getAppProperties().getUserSettings()->removeValue(pluginUid);
-        getAppProperties().saveIfNeeded();
     }
+    getAppProperties().saveIfNeeded();
 }
 
 void IconMenu::savePluginStates()
@@ -1997,19 +1937,19 @@ void IconMenu::savePluginStates()
 	if (settingsImported)
 		return;
 
-	std::vector<PluginDescription> list = getTimeSortedList();
+	std::vector<PluginDescription> list = getOrderedActivePlugins();
     for (int i = 0; i < activePluginList.getNumTypes(); i++)
     {
 		AudioProcessorGraph::Node* node = graph.getNodeForId(i + 1);
 		if (node == nullptr)
-			break;
+			continue;
         AudioProcessor& processor = *node->getProcessor();
 		String pluginUid = getKey("state", list[i]);
         MemoryBlock savedStateBinary;
         processor.getStateInformation(savedStateBinary);
         getAppProperties().getUserSettings()->setValue(pluginUid, savedStateBinary.toBase64Encoding());
-        getAppProperties().saveIfNeeded();
     }
+    getAppProperties().saveIfNeeded();
 }
 
 void IconMenu::exportBackup()
@@ -2379,35 +2319,10 @@ bool IconMenu::importBackup()
 	return true;
 }
 
-void IconMenu::showAudioSettings()
-{
-    if (pluginListWindow == nullptr)
-        pluginListWindow = new PluginListWindow(*this);
-    pluginListWindow->showSettingsView();
-    pluginListWindow->toFront(true);
-
-    ScopedPointer<XmlElement> audioState(deviceManager.createStateXml());
-    getAppProperties().getUserSettings()->setValue("audioDeviceState", audioState);
-    getAppProperties().getUserSettings()->saveIfNeeded();
-}
-
 void IconMenu::reloadPlugins()
 {
 	if (pluginListWindow == nullptr)
 		pluginListWindow = new PluginListWindow(*this);
 	pluginListWindow->showPluginsView();
 	pluginListWindow->toFront(true);
-}
-
-void IconMenu::removePluginsLackingInputOutput()
-{
-	std::vector<int> removeIndex;
-	for (int i = 0; i < knownPluginList.getNumTypes(); i++)
-	{
-		PluginDescription* plugin = knownPluginList.getType(i);
-		if (plugin->numInputChannels < 2 || plugin->numOutputChannels < 2)
-			removeIndex.push_back(i);
-	}
-	for (int i = 0; i < removeIndex.size(); i++)
-		knownPluginList.removeType(removeIndex[i] - i);
 }

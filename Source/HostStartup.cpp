@@ -161,7 +161,6 @@ public:
         return multiInstance.size() == 2;
     }
 
-    ApplicationCommandManager commandManager;
     ScopedPointer<ApplicationProperties> appProperties;
     LightHostLookAndFeel lookAndFeel;
 
@@ -194,7 +193,6 @@ private:
 };
 
 static PluginHostApp& getApp()                      { return *dynamic_cast<PluginHostApp*>(JUCEApplication::getInstance()); }
-ApplicationCommandManager& getCommandManager()      { return getApp().commandManager; }
 ApplicationProperties& getAppProperties()           { return *getApp().appProperties; }
 
 START_JUCE_APPLICATION (PluginHostApp)

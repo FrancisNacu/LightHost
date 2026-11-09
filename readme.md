@@ -28,6 +28,8 @@ The script downloads the pinned JUCE and Steinberg VST3 SDK revisions into `lib/
 
 The build retains VST3 hosting. ASIO is enabled when the Steinberg ASIO SDK is found at `lib/ASIOSDK`, `C:\Dev\SDKs\ASIOSDK`, or the location specified by `ASIO_SDK_PATH`. You can also pass `-AsioSdkPath C:\path\to\ASIOSDK`. If the SDK is unavailable, the script builds without ASIO and prints a warning. Obtain the SDK from Steinberg and follow its license terms. Generated build output, JUCE project files, and downloaded dependencies are ignored by Git.
 
+Add `-RunTests` to build and run the audio routing regression checks. These use in-memory stereo buffers without opening an audio device. They verify empty-chain passthrough, chained processing, bypass/resume, preservation of plugin instances, and missing-plugin handling. They also verify that bypassed plugins receive no processing calls. Test binaries are written to `Builds/Tests/Release/` (or `Debug/`).
+
 ### Screenshot
 
 ![Light Host 1.2](http://i.imgur.com/UF9SWfC.jpg)

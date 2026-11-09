@@ -21,17 +21,16 @@ public:
     void toggleIconColor();
     static void menuInvocationCallback(int id, IconMenu*);
     void changeListenerCallback(ChangeBroadcaster* changed);
-	static String getKey(String type, PluginDescription plugin);
+	static String getKey(const String& type, const PluginDescription& plugin);
 	AudioDeviceManager& getDeviceManager() noexcept { return deviceManager; }
 	void reloadPlugins();
-	void showAudioSettings();
 	void loadActivePlugins();
     void savePluginStates();
     void deletePluginStates();
     void exportBackup();
     bool importBackup();
 
-	const int INDEX_EDIT, INDEX_BYPASS, INDEX_DELETE, INDEX_MOVE_UP, INDEX_MOVE_DOWN;
+	const int INDEX_EDIT, INDEX_BYPASS, INDEX_DELETE;
 
     class PluginManagementComponent;
 	class PluginListWindow;
@@ -43,29 +42,23 @@ private:
 	void performPluginAction(int id);
 	void addPluginToActiveList(const PluginDescription& plugin);
 	void moveActivePlugin(int fromIndex, int toIndex);
-	PluginDescription getNextPluginOlderThanTime(int &time);
-	void removePluginsLackingInputOutput();
-	std::vector<PluginDescription> getTimeSortedList();
+	std::vector<PluginDescription> getOrderedActivePlugins();
 	void setIcon();
+    void updatePluginConnections();
 
     AudioDeviceManager deviceManager;
     AudioPluginFormatManager formatManager;
     KnownPluginList knownPluginList;
     KnownPluginList activePluginList;
     PopupMenu menu;
-    ScopedPointer<PluginDirectoryScanner> scanner;
 	uint32 lastLeftClickTime;
     bool settingsImported;
     AudioProcessorGraph graph;
     AudioProcessorPlayer player;
-    AudioProcessorGraph::Node *inputNode;
-    AudioProcessorGraph::Node *outputNode;
 	#if JUCE_WINDOWS
 	int x, y;
 	#endif
 
-	class PluginManagementComponent;
-	class PluginListWindow;
 	ScopedPointer<PluginListWindow> pluginListWindow;
 };
 

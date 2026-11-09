@@ -24,14 +24,11 @@
                        headerPath="" cppLanguageStandard="c++11" cppLibType="libc++"/>
       </CONFIGURATIONS>
       <MODULEPATHS>
-        <MODULEPATH id="juce_video" path="lib\juce"/>
-        <MODULEPATH id="juce_opengl" path="lib\juce"/>
         <MODULEPATH id="juce_gui_extra" path="lib\juce"/>
         <MODULEPATH id="juce_gui_basics" path="lib\juce"/>
         <MODULEPATH id="juce_graphics" path="lib\juce"/>
         <MODULEPATH id="juce_events" path="lib\juce"/>
         <MODULEPATH id="juce_data_structures" path="lib\juce"/>
-        <MODULEPATH id="juce_cryptography" path="lib\juce"/>
         <MODULEPATH id="juce_core" path="lib\juce"/>
         <MODULEPATH id="juce_audio_utils" path="lib\juce"/>
         <MODULEPATH id="juce_audio_processors" path="lib\juce"/>
@@ -49,14 +46,11 @@
                        isDebug="0" optimisation="3" targetName="Light Host"/>
       </CONFIGURATIONS>
       <MODULEPATHS>
-        <MODULEPATH id="juce_video" path="lib\juce"/>
-        <MODULEPATH id="juce_opengl" path="lib\juce"/>
         <MODULEPATH id="juce_gui_extra" path="lib\juce"/>
         <MODULEPATH id="juce_gui_basics" path="lib\juce"/>
         <MODULEPATH id="juce_graphics" path="lib\juce"/>
         <MODULEPATH id="juce_events" path="lib\juce"/>
         <MODULEPATH id="juce_data_structures" path="lib\juce"/>
-        <MODULEPATH id="juce_cryptography" path="lib\juce"/>
         <MODULEPATH id="juce_core" path="lib\juce"/>
         <MODULEPATH id="juce_audio_utils" path="lib\juce"/>
         <MODULEPATH id="juce_audio_processors" path="lib\juce"/>
@@ -72,14 +66,11 @@
         <CONFIGURATION name="Release" isDebug="0" optimisation="3" targetName="Light Host"/>
       </CONFIGURATIONS>
       <MODULEPATHS>
-        <MODULEPATH id="juce_video" path="lib/juce"/>
-        <MODULEPATH id="juce_opengl" path="lib/juce"/>
         <MODULEPATH id="juce_gui_extra" path="lib/juce"/>
         <MODULEPATH id="juce_gui_basics" path="lib/juce"/>
         <MODULEPATH id="juce_graphics" path="lib/juce"/>
         <MODULEPATH id="juce_events" path="lib/juce"/>
         <MODULEPATH id="juce_data_structures" path="lib/juce"/>
-        <MODULEPATH id="juce_cryptography" path="lib/juce"/>
         <MODULEPATH id="juce_core" path="lib/juce"/>
         <MODULEPATH id="juce_audio_utils" path="lib/juce"/>
         <MODULEPATH id="juce_audio_processors" path="lib/juce"/>
@@ -96,14 +87,11 @@
                        targetName="Light Host"/>
       </CONFIGURATIONS>
       <MODULEPATHS>
-        <MODULEPATH id="juce_video" path="lib/juce"/>
-        <MODULEPATH id="juce_opengl" path="lib/juce"/>
         <MODULEPATH id="juce_gui_extra" path="lib/juce"/>
         <MODULEPATH id="juce_gui_basics" path="lib/juce"/>
         <MODULEPATH id="juce_graphics" path="lib/juce"/>
         <MODULEPATH id="juce_events" path="lib/juce"/>
         <MODULEPATH id="juce_data_structures" path="lib/juce"/>
-        <MODULEPATH id="juce_cryptography" path="lib/juce"/>
         <MODULEPATH id="juce_core" path="lib/juce"/>
         <MODULEPATH id="juce_audio_utils" path="lib/juce"/>
         <MODULEPATH id="juce_audio_processors" path="lib/juce"/>
@@ -123,6 +111,7 @@
             file="Source/HostStartup.cpp"/>
       <FILE id="SO1QjM" name="IconMenu.cpp" compile="1" resource="0" file="Source/IconMenu.cpp"/>
       <FILE id="pzKV1s" name="IconMenu.hpp" compile="0" resource="0" file="Source/IconMenu.hpp"/>
+      <FILE id="chainHeader" name="PluginChain.h" compile="0" resource="0" file="Source/PluginChain.h"/>
     </GROUP>
     <GROUP id="{B6DF5A1E-D458-C20A-CD4E-C679E4461593}" name="Resources">
       <FILE id="kxxp8K" name="icon.png" compile="0" resource="1" file="Resources/icon.png"/>
@@ -143,14 +132,11 @@
     <MODULE id="juce_audio_processors" showAllCode="1" useLocalCopy="1"/>
     <MODULE id="juce_audio_utils" showAllCode="1" useLocalCopy="1"/>
     <MODULE id="juce_core" showAllCode="1" useLocalCopy="1"/>
-    <MODULE id="juce_cryptography" showAllCode="1" useLocalCopy="1"/>
     <MODULE id="juce_data_structures" showAllCode="1" useLocalCopy="1"/>
     <MODULE id="juce_events" showAllCode="1" useLocalCopy="1"/>
     <MODULE id="juce_graphics" showAllCode="1" useLocalCopy="1"/>
     <MODULE id="juce_gui_basics" showAllCode="1" useLocalCopy="1"/>
     <MODULE id="juce_gui_extra" showAllCode="1" useLocalCopy="1"/>
-    <MODULE id="juce_opengl" showAllCode="1" useLocalCopy="1"/>
-    <MODULE id="juce_video" showAllCode="1" useLocalCopy="1"/>
   </MODULES>
   <LIVE_SETTINGS>
     <OSX headerPath=""/>

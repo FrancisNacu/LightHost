@@ -1,7 +1,8 @@
 param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
-    [string]$AsioSdkPath
+    [string]$AsioSdkPath,
+    [switch]$RunTests
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,7 +42,7 @@ else {
 function Invoke-CheckedCommand {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
-        [Parameter(Mandatory = $true)][string[]]$Arguments
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Arguments
     )
 
     & $FilePath @Arguments
@@ -238,10 +239,18 @@ try {
     New-Item -ItemType Directory -Path $visualStudioProjectDirectory -Force | Out-Null
 
     [System.IO.File]::WriteAllText($projectPath, $projectXml, [System.Text.UTF8Encoding]::new($false))
-    $projucerOutput = & $projucer.FullName --resave $projectPath 2>&1
+    # Projucer is a Windows GUI executable; explicitly wait for all generated files.
+    $projucerStdout = Join-Path $repositoryRoot 'Builds\projucer-stdout.log'
+    $projucerStderr = Join-Path $repositoryRoot 'Builds\projucer-stderr.log'
+    $projucerProcess = Start-Process -FilePath $projucer.FullName `
+        -ArgumentList @('--resave', ('"' + $projectPath + '"')) `
+        -WindowStyle Hidden -Wait -PassThru `
+        -RedirectStandardOutput $projucerStdout -RedirectStandardError $projucerStderr
+    $projucerOutput = @(Get-Content -LiteralPath $projucerStdout) +
+        @(Get-Content -LiteralPath $projucerStderr)
     $projucerOutput | ForEach-Object { Write-Host $_ }
-    if ($LASTEXITCODE -ne 0) {
-        throw "Projucer failed with exit code $LASTEXITCODE."
+    if ($projucerProcess.ExitCode -ne 0) {
+        throw "Projucer failed with exit code $($projucerProcess.ExitCode)."
     }
     if (($projucerOutput | Out-String) -match 'Error when saving:') {
         throw "Projucer could not save the project. Verify that every enabled JUCE module path points to '$jucePath\modules'."
@@ -418,6 +427,36 @@ try {
     }
 
     Write-Host "Built executable: $executablePath"
+
+    if ($RunTests) {
+        # Reuse the generated compiler/linker settings, with separate test output.
+        [xml]$testProject = $visualStudioProject.OuterXml
+        $testNamespaces = [System.Xml.XmlNamespaceManager]::new($testProject.NameTable)
+        $testNamespaces.AddNamespace('msbuild', $testProject.DocumentElement.NamespaceURI)
+        foreach ($source in $testProject.SelectNodes('//msbuild:ItemGroup/msbuild:ClCompile', $testNamespaces)) {
+            if ($source.GetAttribute('Include') -match '[\\/]Source[\\/]') {
+                $source.ParentNode.RemoveChild($source) | Out-Null
+            }
+        }
+        $sourceGroup = $testProject.SelectSingleNode('//msbuild:ItemGroup[msbuild:ClCompile]', $testNamespaces)
+        $testSource = $testProject.CreateElement('ClCompile', $testProject.DocumentElement.NamespaceURI)
+        $testSource.SetAttribute('Include', (Join-Path $repositoryRoot 'Tests\PluginChainTests.cpp'))
+        $sourceGroup.AppendChild($testSource) | Out-Null
+        foreach ($link in $testProject.SelectNodes('//msbuild:ItemDefinitionGroup/msbuild:Link', $testNamespaces)) {
+            $link.SelectSingleNode('msbuild:SubSystem', $testNamespaces).InnerText = 'Console'
+            $link.SelectSingleNode('msbuild:OutputFile', $testNamespaces).InnerText = '$(OutDir)\PluginChainTests.exe'
+        }
+        $testProjectPath = Join-Path $visualStudioProjectDirectory 'PluginChainTests.vcxproj'
+        $testProject.Save($testProjectPath)
+        $testOutput = Join-Path $repositoryRoot "Builds\Tests\$Configuration"
+        Invoke-CheckedCommand -FilePath $msbuildPath -Arguments @(
+            $testProjectPath, '-m', "-p:Configuration=$Configuration", '-p:Platform=x64',
+            '-p:PlatformToolset=v143', '-p:WindowsTargetPlatformVersion=10.0',
+            '-p:TargetName=PluginChainTests',
+            "-p:OutDir=$testOutput\", "-p:IntDir=$testOutput\obj\"
+        )
+        Invoke-CheckedCommand -FilePath (Join-Path $testOutput 'PluginChainTests.exe') -Arguments @()
+    }
 }
 finally {
     [System.IO.File]::WriteAllText($projectPath, $originalProject, [System.Text.UTF8Encoding]::new($false))
