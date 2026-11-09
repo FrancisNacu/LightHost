@@ -18,23 +18,28 @@ public:
     ~IconMenu();
     void mouseDown(const MouseEvent&);
 	void mouseDoubleClick(const MouseEvent&);
+    void toggleIconColor();
     static void menuInvocationCallback(int id, IconMenu*);
     void changeListenerCallback(ChangeBroadcaster* changed);
 	static String getKey(String type, PluginDescription plugin);
+	AudioDeviceManager& getDeviceManager() noexcept { return deviceManager; }
+	void reloadPlugins();
+	void showAudioSettings();
+	void loadActivePlugins();
+    void savePluginStates();
+    void deletePluginStates();
+    void exportBackup();
+    bool importBackup();
 
 	const int INDEX_EDIT, INDEX_BYPASS, INDEX_DELETE, INDEX_MOVE_UP, INDEX_MOVE_DOWN;
+
+    class PluginManagementComponent;
+	class PluginListWindow;
 private:
 	#if JUCE_MAC
     std::string exec(const char* cmd);
 	#endif
     void timerCallback();
-    void reloadPlugins();
-    void showAudioSettings();
-    void loadActivePlugins();
-    void savePluginStates();
-    void deletePluginStates();
-    void exportBackup();
-    bool importBackup();
 	void performPluginAction(int id);
 	void addPluginToActiveList(const PluginDescription& plugin);
 	void moveActivePlugin(int fromIndex, int toIndex);

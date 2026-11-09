@@ -306,6 +306,20 @@ try {
     $juceModuleIncludePrefix = ($juceModuleIncludeDirectories -join ';') + ';'
 
     foreach ($compileSetting in $compileSettings) {
+        # These pinned JUCE/MSVC diagnostics are limited to the compiler settings for this app.
+        $disabledWarnings = $compileSetting.SelectSingleNode(
+            'msbuild:DisableSpecificWarnings', $namespaceManager)
+        if ($null -eq $disabledWarnings) {
+            $disabledWarnings = $visualStudioProject.CreateElement(
+                'DisableSpecificWarnings', $visualStudioProject.DocumentElement.NamespaceURI)
+            $compileSetting.AppendChild($disabledWarnings) | Out-Null
+        }
+        foreach ($warning in @('4723', '4840')) {
+            if ($disabledWarnings.InnerText -notmatch "(^|;)$warning(;|$)") {
+                $disabledWarnings.InnerText = $warning + ';' + $disabledWarnings.InnerText
+            }
+        }
+
         $includeDirectories = $compileSetting.SelectSingleNode(
             'msbuild:AdditionalIncludeDirectories', $namespaceManager)
         if ($null -eq $includeDirectories) {
@@ -335,6 +349,7 @@ try {
                 'JUCE_VST3HEADERS_INCLUDE_HEADERS_ONLY=1;' + $preprocessorDefinitions.InnerText
         }
     }
+
     $visualStudioProject.Save($visualStudioProjectPath)
 
     $linkSettings = $visualStudioProject.SelectNodes(
@@ -372,6 +387,17 @@ try {
         }
     }
     $visualStudioProject.Save($visualStudioProjectPath)
+    [xml]$savedVisualStudioProject = [System.IO.File]::ReadAllText($visualStudioProjectPath)
+    $savedNamespaceManager = [System.Xml.XmlNamespaceManager]::new(
+        $savedVisualStudioProject.NameTable)
+    $savedNamespaceManager.AddNamespace(
+        'msbuild', $savedVisualStudioProject.DocumentElement.NamespaceURI)
+    $savedWarningSettings = $savedVisualStudioProject.SelectNodes(
+        '//msbuild:ItemDefinitionGroup/msbuild:ClCompile/msbuild:DisableSpecificWarnings',
+        $savedNamespaceManager)
+    if ($savedWarningSettings.Count -ne $compileSettings.Count) {
+        throw 'Could not save the MSVC warning suppressions to the generated project.'
+    }
 
     $outputDirectory = Join-Path $repositoryRoot "Builds\Windows\$Configuration"
     New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null

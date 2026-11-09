@@ -11,30 +11,29 @@
 #include "PluginWindow.h"
 #include <algorithm>
 #include <ctime>
+#include <functional>
 #include <limits.h>
 #include <string>
 #if JUCE_WINDOWS
 #include "Windows.h"
 #endif
 
+class IconMenu::PluginManagementComponent;
+
 namespace
 {
 enum
 {
-	menuAudioSettings = 1,
-	menuPlugins,
-	menuImportBackup,
-	menuExportBackup,
+	menuOpenLightHost = 1,
 	menuRunOnStartup,
-	menuDeletePluginStates,
-	menuInvertIconColor,
 	menuQuit
 };
 
 enum ActivePluginHoveredAction
 {
 	noActivePluginAction,
-	bypassActivePluginAction
+	bypassActivePluginAction,
+	menuActivePluginAction
 };
 
 const char* const activePluginDragPrefix = "active-plugin:";
@@ -76,6 +75,215 @@ bool isSafePluginArchivePath(const String& path)
 
 	return true;
 }
+
+class PluginActionMenuLookAndFeel : public LookAndFeel_V3
+{
+public:
+	PluginActionMenuLookAndFeel()
+	{
+	}
+
+	void drawCallOutBoxBackground(CallOutBox& box, Graphics& graphics,
+		const Path& path, Image& cachedImage) override
+	{
+		if (cachedImage.isNull())
+		{
+			cachedImage = Image(Image::ARGB, box.getWidth(), box.getHeight(), true);
+			Graphics shadowGraphics(cachedImage);
+			DropShadow(Colours::black.withAlpha(0.18f), 10, Point<int>(0, 3))
+				.drawForPath(shadowGraphics, path);
+		}
+
+		graphics.drawImageAt(cachedImage, 0, 0);
+		graphics.setColour(Colours::white);
+		graphics.fillPath(path);
+		graphics.setColour(Colour(0xffE3E1F0));
+		graphics.strokePath(path, PathStrokeType(1.0f));
+	}
+
+	int getCallOutBoxBorderSize(const CallOutBox&) override
+	{
+		return 0;
+	}
+};
+
+class PluginActionMenuContent : public Component
+{
+public:
+	explicit PluginActionMenuContent(std::function<void(int)> action_)
+		: action(action_)
+	{
+		setSize(128, 68);
+	}
+
+	void paint(Graphics& graphics) override
+	{
+		graphics.setColour(hoveredAction == 1
+			? Colour(0xffECE9FA) : Colours::white);
+		graphics.fillRoundedRectangle(2.0f, 2.0f, (float) getWidth() - 4.0f,
+			30.0f, 4.0f);
+		graphics.setColour(Colour(0xff1D1B2E));
+		graphics.setFont(Font(13.0f));
+		graphics.drawText("Rename", 14, 2, getWidth() - 28, 30,
+			Justification::centredLeft);
+
+		graphics.setColour(Colour(0xffEEECF7));
+		graphics.fillRect(12, 34, getWidth() - 24, 1);
+
+		graphics.setColour(hoveredAction == 2
+			? Colour(0xffFCE8E8) : Colours::white);
+		graphics.fillRoundedRectangle(2.0f, 36.0f, (float) getWidth() - 4.0f,
+			30.0f, 4.0f);
+		graphics.setColour(Colour(0xffC42B2B));
+		graphics.drawText("Delete", 14, 36, getWidth() - 28, 30,
+			Justification::centredLeft);
+	}
+
+	void mouseMove(const MouseEvent& event) override
+	{
+		const int actionAtPosition = getActionAtPosition(event.y);
+		if (hoveredAction != actionAtPosition)
+		{
+			hoveredAction = actionAtPosition;
+			repaint();
+		}
+	}
+
+	void mouseExit(const MouseEvent&) override
+	{
+		if (hoveredAction != 0)
+		{
+			hoveredAction = 0;
+			repaint();
+		}
+	}
+
+	void mouseUp(const MouseEvent& event) override
+	{
+		const int selectedAction = getActionAtPosition(event.y);
+		if (selectedAction == 0)
+			return;
+
+		if (auto* callout = dynamic_cast<CallOutBox*>(getParentComponent()))
+			callout->dismiss();
+		action(selectedAction);
+	}
+
+private:
+	int getActionAtPosition(int y) const
+	{
+		if (y >= 0 && y < 34)
+			return 1;
+		if (y >= 34 && y < getHeight())
+			return 2;
+		return 0;
+	}
+
+	std::function<void(int)> action;
+	int hoveredAction = 0;
+};
+
+PluginActionMenuLookAndFeel pluginActionMenuLookAndFeel;
+
+class TrayMenuLookAndFeel : public LookAndFeel_V3
+{
+public:
+	TrayMenuLookAndFeel()
+		: appIcon(ImageFileFormat::loadFrom(BinaryData::icon_png, BinaryData::icon_pngSize))
+	{
+		setColour(PopupMenu::backgroundColourId, Colour(0x00000000));
+		setColour(PopupMenu::textColourId, Colour(0xff1D1B2E));
+		setColour(PopupMenu::highlightedBackgroundColourId, Colour(0xffF4F3FB));
+		setColour(PopupMenu::highlightedTextColourId, Colour(0xff1D1B2E));
+	}
+
+	void drawPopupMenuBackground(Graphics& graphics, int width, int height) override
+	{
+		const juce::Rectangle<float> bounds(0.5f, 0.5f,
+			(float) width - 1.0f, (float) height - 1.0f);
+		graphics.setColour(Colours::white);
+		graphics.fillRoundedRectangle(bounds.reduced(0.5f), 14.0f);
+		graphics.setColour(Colour(0xffE3E1F0));
+		graphics.drawRoundedRectangle(bounds, 14.0f, 1.0f);
+	}
+
+	void drawPopupMenuItem(Graphics& graphics, const juce::Rectangle<int>& area,
+		bool isSeparator, bool isActive, bool isHighlighted, bool isTicked,
+		bool, const String& text, const String&, const Drawable*,
+		const Colour* textColour) override
+	{
+		if (isSeparator)
+		{
+			const juce::Rectangle<int> divider = area.reduced(10, 0);
+			graphics.setColour(Colour(0xffEEECF7));
+			graphics.fillRect(divider.getX(), divider.getCentreY(),
+				divider.getWidth(), 1);
+			return;
+		}
+
+		if (isHighlighted)
+		{
+			graphics.setColour(Colour(0xffF4F3FB));
+			graphics.fillRoundedRectangle(area.reduced(4, 1).toFloat(), 5.0f);
+		}
+
+		Colour itemTextColour = textColour != nullptr
+			? *textColour
+			: Colour(0xff1D1B2E);
+		if (! isActive)
+			itemTextColour = itemTextColour.withAlpha(0.45f);
+
+		graphics.setColour(itemTextColour);
+		graphics.setFont(Font(13.0f));
+		graphics.drawFittedText(text, area.reduced(14, 0),
+			Justification::centredLeft, 1);
+
+		if (text == "Run on startup")
+		{
+			const juce::Rectangle<float> track((float) area.getRight() - 44.0f,
+				(float) area.getCentreY() - 9.0f, 34.0f, 18.0f);
+			graphics.setColour(isTicked ? Colour(0xff5B45D6) : Colour(0xffCFCBE6));
+			graphics.fillRoundedRectangle(track, 9.0f);
+			graphics.setColour(Colours::white);
+			graphics.fillEllipse(track.getX() + (isTicked ? 18.0f : 2.0f),
+				track.getY() + 2.0f, 14.0f, 14.0f);
+		}
+	}
+
+	void drawPopupMenuSectionHeader(Graphics& graphics,
+		const juce::Rectangle<int>& area, const String& sectionName) override
+	{
+		graphics.drawImageWithin(appIcon, 14, area.getY(), 20, area.getHeight(),
+			RectanglePlacement::centred);
+		graphics.setColour(Colour(0xff1D1B2E));
+		graphics.setFont(Font(14.0f, Font::bold));
+		graphics.drawFittedText(sectionName,
+			juce::Rectangle<int>(42, area.getY(), area.getWidth() - 54,
+				area.getHeight() - 1),
+			Justification::centredLeft, 1);
+		graphics.setColour(Colour(0xffEEECF7));
+		graphics.fillRect(10, area.getBottom() - 1, area.getWidth() - 20, 1);
+	}
+
+	void getIdealPopupMenuItemSize(const String&, bool isSeparator,
+		int standardItemHeight, int& idealWidth, int& idealHeight) override
+	{
+		if (isSeparator)
+		{
+			idealWidth = 240;
+			idealHeight = 4;
+			return;
+		}
+
+		idealHeight = standardItemHeight > 0 ? standardItemHeight : 36;
+		idealWidth = 240;
+	}
+
+private:
+	Image appIcon;
+};
+
+TrayMenuLookAndFeel trayMenuLookAndFeel;
 
 void remapPluginPaths(PropertySet& settings, const String& key,
 	const StringArray& oldPaths, const StringArray& newPaths)
@@ -184,6 +392,419 @@ void toggleRunOnStartup()
 #endif
 }
 
+class LightHostSwitch : public ToggleButton
+{
+public:
+    explicit LightHostSwitch (const String& text)
+        : ToggleButton (text)
+    {
+        setClickingTogglesState (true);
+    }
+
+    void paintButton (Graphics& g, bool isMouseOverButton, bool isButtonDown) override
+    {
+        const juce::Rectangle<float> buttonBounds = getLocalBounds().toFloat();
+        juce::Rectangle<float> track (buttonBounds.getRight() - 42.0f,
+                                      buttonBounds.getCentreY() - 10.0f, 38.0f, 20.0f);
+        const bool enabled = getToggleState();
+
+        Colour trackColour = enabled ? Colour (0xff5B45D6) : Colour (0xffCFCBE6);
+        if (isMouseOverButton || isButtonDown)
+            trackColour = trackColour.brighter (isButtonDown ? 0.12f : 0.06f);
+        g.setColour (trackColour);
+        g.fillRoundedRectangle (track, 10.0f);
+        g.setColour (Colours::white);
+        const float thumbX = enabled ? track.getRight() - 18.0f : track.getX() + 2.0f;
+        g.fillEllipse (thumbX, track.getY() + 2.0f, 16.0f, 16.0f);
+
+        g.setColour (Colour (0xff1D1B2E).withAlpha (isEnabled() ? 1.0f : 0.5f));
+        g.setFont (Font (14.0f));
+        g.drawText (getButtonText(), 0, 0, getWidth() - 52, getHeight(),
+                    Justification::centredLeft, true);
+
+        if (hasKeyboardFocus (false))
+        {
+            g.setColour (Colour (0xff5B45D6));
+            g.drawRoundedRectangle (buttonBounds.reduced (0.5f), 5.0f, 1.0f);
+        }
+
+    }
+};
+
+class LightHostAudioDeviceSelector : public AudioDeviceSelectorComponent
+{
+public:
+    explicit LightHostAudioDeviceSelector (AudioDeviceManager& deviceManager)
+        : AudioDeviceSelectorComponent (deviceManager, 0, 256, 0, 256,
+                                        false, false, true, false)
+    {
+    }
+
+    void resized() override
+    {
+        AudioDeviceSelectorComponent::resized();
+
+        ComboBox* deviceType = nullptr;
+        Component* deviceSettings = nullptr;
+        for (int i = 0; i < getNumChildComponents(); ++i)
+        {
+            Component* child = getChildComponent (i);
+            if (auto* combo = dynamic_cast<ComboBox*> (child))
+                deviceType = combo;
+            else if (child->getWidth() >= getWidth() - 1
+                     && child->getHeight() > 100)
+                deviceSettings = child;
+        }
+
+        if (deviceType != nullptr && deviceSettings != nullptr)
+        {
+            const int typeTop = 8;
+            deviceType->setTopLeftPosition (deviceType->getX(), typeTop);
+            deviceSettings->setTopLeftPosition (
+                deviceSettings->getX(), deviceType->getBottom() + 12);
+
+            compactAdvancedRowSpacing (*deviceSettings);
+        }
+
+        int contentBottom = 0;
+        for (int i = 0; i < getNumChildComponents(); ++i)
+            contentBottom = jmax (contentBottom, getChildComponent (i)->getBottom());
+
+        const int contentHeight = contentBottom + 8;
+        if (contentHeight != getHeight())
+            setSize (getWidth(), contentHeight);
+    }
+
+private:
+    static void shiftChildrenFromY (Component& parent, int y, int amount)
+    {
+        for (int i = 0; i < parent.getNumChildComponents(); ++i)
+        {
+            Component* const child = parent.getChildComponent (i);
+            if (child->getY() >= y)
+                child->setTopLeftPosition (child->getX(), child->getY() - amount);
+        }
+    }
+
+    void compactAdvancedRowSpacing (Component& deviceSettings)
+    {
+        int lastChannelListBottom = -1;
+        for (int i = 0; i < deviceSettings.getNumChildComponents(); ++i)
+            if (auto* list = dynamic_cast<ListBox*> (deviceSettings.getChildComponent (i)))
+                lastChannelListBottom = jmax (lastChannelListBottom, list->getBottom());
+
+        if (lastChannelListBottom < 0)
+            return;
+
+        int sampleRateTop = deviceSettings.getHeight();
+        for (int i = 0; i < deviceSettings.getNumChildComponents(); ++i)
+            if (auto* combo = dynamic_cast<ComboBox*> (deviceSettings.getChildComponent (i)))
+                if (combo->getY() >= lastChannelListBottom)
+                    sampleRateTop = jmin (sampleRateTop, combo->getY());
+
+        if (sampleRateTop == deviceSettings.getHeight())
+            return;
+
+        const int rowSpacing = getItemHeight() / 4;
+        shiftChildrenFromY (deviceSettings, sampleRateTop - rowSpacing,
+                           rowSpacing * 2);
+
+        int bufferSizeBottom = -1;
+        for (int i = 0; i < deviceSettings.getNumChildComponents(); ++i)
+            if (auto* combo = dynamic_cast<ComboBox*> (deviceSettings.getChildComponent (i)))
+                if (combo->getY() >= sampleRateTop)
+                    bufferSizeBottom = jmax (bufferSizeBottom, combo->getBottom());
+
+        int buttonsTop = deviceSettings.getHeight();
+        for (int i = 0; i < deviceSettings.getNumChildComponents(); ++i)
+            if (auto* button = dynamic_cast<TextButton*> (deviceSettings.getChildComponent (i)))
+                if (button->getY() >= bufferSizeBottom)
+                    buttonsTop = jmin (buttonsTop, button->getY());
+
+        if (buttonsTop < deviceSettings.getHeight())
+            shiftChildrenFromY (deviceSettings, buttonsTop, rowSpacing);
+    }
+};
+
+class AudioSettingsViewport : public Viewport
+{
+public:
+    std::function<void(bool, bool)> onScrollStateChanged;
+
+    void visibleAreaChanged (const juce::Rectangle<int>& visibleArea) override
+    {
+        Component* const content = getViewedComponent();
+        if (content != nullptr && onScrollStateChanged)
+            onScrollStateChanged (visibleArea.getY() > 0,
+                                  visibleArea.getBottom() < content->getHeight());
+    }
+};
+
+class AudioScrollIndicator : public Component
+{
+public:
+    AudioScrollIndicator()
+    {
+        setInterceptsMouseClicks (false, false);
+    }
+
+    void setScrollState (bool canScrollUp_, bool canScrollDown_)
+    {
+        if (canScrollUp != canScrollUp_ || canScrollDown != canScrollDown_)
+        {
+            canScrollUp = canScrollUp_;
+            canScrollDown = canScrollDown_;
+            repaint();
+        }
+    }
+
+    void paint (Graphics& g) override
+    {
+        if (canScrollUp)
+        {
+            ColourGradient fade (Colour (0xf2FFFFFF), 0.0f, 0.0f,
+                                 Colour (0x00FFFFFF), 0.0f, 22.0f, false);
+            g.setGradientFill (fade);
+            g.fillRect (getLocalBounds().removeFromTop (22));
+            g.setColour (Colour (0xff6B6880));
+            g.setFont (Font (11.0f));
+            g.drawText ("Scroll up", 8, 1, getWidth() - 24, 16,
+                        Justification::centredRight, true);
+        }
+
+        if (canScrollDown)
+        {
+            const int hintHeight = 28;
+            const int hintTop = getHeight() - hintHeight;
+            ColourGradient fade (Colour (0x00FFFFFF), 0.0f, (float) hintTop,
+                                 Colour (0xf2FFFFFF), 0.0f, (float) getHeight(), false);
+            g.setGradientFill (fade);
+            g.fillRect (0, hintTop, getWidth(), hintHeight);
+
+            Path chevron;
+            const float x = (float) getWidth() - 12.0f;
+            const float y = (float) getHeight() - 13.0f;
+            chevron.startNewSubPath (x - 3.0f, y - 2.0f);
+            chevron.lineTo (x, y + 1.0f);
+            chevron.lineTo (x + 3.0f, y - 2.0f);
+            g.strokePath (chevron, PathStrokeType (1.5f, PathStrokeType::curved,
+                                                    PathStrokeType::rounded));
+        }
+    }
+
+private:
+    bool canScrollUp = false;
+    bool canScrollDown = false;
+};
+
+class LightHostSettingsView : public Component,
+    private Button::Listener
+{
+public:
+    explicit LightHostSettingsView (IconMenu& owner_)
+        : owner (owner_),
+          audioDeviceSelector (owner_.getDeviceManager())
+    {
+        setOpaque (false);
+        audioDeviceSelector.setItemHeight (44);
+        audioViewport.setViewedComponent (&audioDeviceSelector, false);
+        audioViewport.setScrollBarsShown (true, false);
+        audioViewport.setScrollBarThickness (9);
+        audioViewport.setColour (ScrollBar::thumbColourId, Colour (0xffA8A4B8));
+        audioViewport.setColour (ScrollBar::backgroundColourId, Colour (0xffF4F3FB));
+        audioViewport.onScrollStateChanged = [this] (bool canScrollUp, bool canScrollDown)
+        {
+            audioScrollIndicator.setScrollState (canScrollUp, canScrollDown);
+        };
+        addAndMakeVisible (audioViewport);
+        addAndMakeVisible (audioScrollIndicator);
+
+        appTitle.setText ("App", dontSendNotification);
+        appTitle.setFont (Font (20.0f, Font::bold));
+        appTitle.setColour (Label::textColourId, Colour (0xff1D1B2E));
+        addAndMakeVisible (appTitle);
+
+        runOnStartupButton.addListener (this);
+        addAndMakeVisible (runOnStartupButton);
+        invertIconButton.addListener (this);
+        addAndMakeVisible (invertIconButton);
+
+        importButton.setButtonText ("Import backup...");
+        importButton.addListener (this);
+        addAndMakeVisible (importButton);
+        exportButton.setButtonText ("Export backup...");
+        exportButton.addListener (this);
+        addAndMakeVisible (exportButton);
+
+        deleteButton.setButtonText ("Delete plugin states");
+        deleteButton.setColour (TextButton::textColourOnId, Colour (0xffC42B2B));
+        deleteButton.setColour (TextButton::textColourOffId, Colour (0xffC42B2B));
+        deleteButton.addListener (this);
+        addAndMakeVisible (deleteButton);
+
+#if JUCE_WINDOWS
+        bool enabled = false;
+        if (getRunOnStartupEnabled (enabled))
+            runOnStartupButton.setToggleState (enabled, dontSendNotification);
+#endif
+
+        const String iconColour = getAppProperties().getUserSettings()->getValue ("icon");
+        invertIconButton.setToggleState (iconColour.equalsIgnoreCase ("black"),
+                                         dontSendNotification);
+    }
+
+    void paint (Graphics& g) override
+    {
+        const Colour surface (0xffFFFFFF);
+        const Colour border (0xffE3E1F0);
+        g.setColour (surface);
+        g.fillRoundedRectangle (audioCard.toFloat(), 14.0f);
+        g.fillRoundedRectangle (appCard.toFloat(), 14.0f);
+        g.setColour (border);
+        g.drawRoundedRectangle (audioCard.toFloat().reduced (0.5f), 14.0f, 1.0f);
+        g.drawRoundedRectangle (appCard.toFloat().reduced (0.5f), 14.0f, 1.0f);
+        g.setColour (Colour (0xff1D1B2E));
+        g.setFont (Font (20.0f, Font::bold));
+        g.drawText ("Audio", audioCard.withTrimmedLeft (18).withTrimmedTop (14)
+                    .withHeight (28), Justification::centredLeft);
+        g.setColour (Colour (0xffEEECF7));
+        g.drawHorizontalLine (appCard.getY() + 56, (float) appCard.getX() + 18.0f,
+                              (float) appCard.getRight() - 18.0f);
+        g.drawHorizontalLine (appCard.getY() + 168, (float) appCard.getX() + 18.0f,
+                              (float) appCard.getRight() - 18.0f);
+    }
+
+    void resized() override
+    {
+        juce::Rectangle<int> area (getLocalBounds().reduced (12));
+        const int gap = 12;
+        const int cardWidth = (area.getWidth() - gap) * 63 / 100;
+        audioCard = area.removeFromLeft (cardWidth);
+        area.removeFromLeft (gap);
+        appCard = area;
+
+        juce::Rectangle<int> audioContents = audioCard.reduced (16);
+        audioContents.removeFromTop (34);
+        audioViewport.setBounds (audioContents);
+        audioScrollIndicator.setBounds (audioContents);
+        audioDeviceSelector.setSize (
+            jmax (0, audioViewport.getWidth() - audioViewport.getScrollBarThickness()),
+            jmax (audioViewport.getHeight(), audioDeviceSelector.getHeight()));
+
+        juce::Rectangle<int> appContents = appCard.reduced (18);
+        appTitle.setBounds (appContents.removeFromTop (34));
+        appContents.removeFromTop (12);
+        runOnStartupButton.setBounds (appContents.removeFromTop (44));
+        appContents.removeFromTop (8);
+        invertIconButton.setBounds (appContents.removeFromTop (44));
+        appContents.removeFromTop (18);
+        juce::Rectangle<int> backupButtons = appContents.removeFromTop (44);
+        const int importWidth = (backupButtons.getWidth() - 8) / 2;
+        importButton.setBounds (backupButtons.removeFromLeft (importWidth));
+        backupButtons.removeFromLeft (8);
+        exportButton.setBounds (backupButtons);
+        appContents.removeFromTop (12);
+        deleteButton.setBounds (appContents.removeFromTop (44));
+    }
+
+    void buttonClicked (Button* button) override
+    {
+        if (button == &runOnStartupButton)
+        {
+#if JUCE_WINDOWS
+            toggleRunOnStartup();
+            bool enabled = false;
+            if (getRunOnStartupEnabled (enabled))
+                runOnStartupButton.setToggleState (enabled, dontSendNotification);
+#endif
+            return;
+        }
+
+        if (button == &invertIconButton)
+        {
+            owner.toggleIconColor();
+            return;
+        }
+
+        if (button == &importButton)
+        {
+            if (owner.importBackup())
+                JUCEApplication::getInstance()->quit();
+            return;
+        }
+
+        if (button == &exportButton)
+        {
+            owner.exportBackup();
+            return;
+        }
+
+        if (button == &deleteButton)
+        {
+            owner.deletePluginStates();
+            owner.loadActivePlugins();
+        }
+    }
+
+private:
+    IconMenu& owner;
+    LightHostAudioDeviceSelector audioDeviceSelector;
+    AudioSettingsViewport audioViewport;
+    AudioScrollIndicator audioScrollIndicator;
+    Label appTitle;
+    LightHostSwitch runOnStartupButton {"Run on startup"};
+    LightHostSwitch invertIconButton {"Invert icon color"};
+    TextButton importButton, exportButton, deleteButton;
+    juce::Rectangle<int> audioCard, appCard;
+};
+
+class LightHostAboutView : public Component
+{
+public:
+    LightHostAboutView()
+    {
+        title.setText ("Light Host", dontSendNotification);
+        title.setFont (Font (22.0f, Font::bold));
+        addAndMakeVisible (title);
+
+        version.setText ("Version " + String (ProjectInfo::versionString), dontSendNotification);
+        version.setFont (Font (15.0f));
+        version.setColour (Label::textColourId, Colour (0xff6B6880));
+        addAndMakeVisible (version);
+
+        credit.setText ("Built with JUCE and designed for a modern single-window workflow.", dontSendNotification);
+        credit.setFont (Font (14.0f));
+        credit.setColour (Label::textColourId, Colour (0xff6B6880));
+        addAndMakeVisible (credit);
+    }
+
+    void paint (Graphics& g) override
+    {
+        g.fillAll (Colour (0xffF4F3FB));
+    }
+
+    void resized() override
+    {
+        juce::Rectangle<int> area (getLocalBounds().reduced (28));
+        title.setBounds (area.removeFromTop (28));
+        version.setBounds (area.removeFromTop (24));
+        credit.setBounds (area.removeFromTop (22));
+    }
+
+private:
+    Label title, version, credit;
+};
+
+class StatusDotComponent : public Component
+{
+public:
+    void paint (Graphics& g) override
+    {
+        g.setColour (Colour (0xff1F9D55));
+        g.fillEllipse (getLocalBounds().toFloat().reduced (1.0f));
+    }
+};
+
 class IconMenu::PluginManagementComponent : public Component,
 	public DragAndDropContainer, public DragAndDropTarget,
 	private ListBoxModel, private Button::Listener
@@ -191,7 +812,7 @@ class IconMenu::PluginManagementComponent : public Component,
 public:
 	PluginManagementComponent(IconMenu& owner_)
 		: owner(owner_), activePlugins("Active Plugins", this),
-		  addButton("Add to Active Plugins"),
+		  addButton("+ Add to Active Plugins"),
 		  hoveredRow(-1), hoveredAction(noActivePluginAction), dragTargetIndex(-1)
 	{
 		activeGroup.setText("Active Plugins");
@@ -204,20 +825,7 @@ public:
 		bypassHeading.setTooltip("Check a plugin to bypass it");
 		addAndMakeVisible(bypassHeading);
 
-		activeInstructions.setText(
-			"Drag to reorder. Right-click a plugin to remove it; double-click to open.",
-			dontSendNotification);
-		availableInstructions.setText(
-			"Select a plugin below and add it to your active chain.",
-			dontSendNotification);
-		activeInstructions.setFont(Font(13.0f));
-		availableInstructions.setFont(Font(13.0f));
-		activeInstructions.setColour(Label::textColourId, Colours::darkgrey);
-		availableInstructions.setColour(Label::textColourId, Colours::darkgrey);
-		addAndMakeVisible(activeInstructions);
-		addAndMakeVisible(availableInstructions);
-
-		activePlugins.setRowHeight(26);
+		activePlugins.setRowHeight(34);
 		addAndMakeVisible(activePlugins);
 		activePlugins.addMouseListener(this, true);
 
@@ -226,6 +834,7 @@ public:
 		availablePlugins = new PluginListComponent(owner.formatManager,
 			owner.knownPluginList, deadMansPedalFile,
 			getAppProperties().getUserSettings());
+		availablePlugins->setOptionsButtonText("Options...");
 		addAndMakeVisible(availablePlugins);
 		availablePlugins->getTableListBox().addMouseListener(this, true);
 
@@ -260,7 +869,20 @@ public:
 
 	void mouseUp(const MouseEvent&) override
 	{
+		dragHandleRow = -1;
 		updateAddButton();
+	}
+
+	void mouseDown(const MouseEvent& event) override
+	{
+		if (! activePlugins.isParentOf(event.eventComponent)
+			&& event.eventComponent != &activePlugins)
+			return;
+
+		const MouseEvent listEvent = event.getEventRelativeTo(&activePlugins);
+		const int row = activePlugins.getRowContainingPosition(listEvent.x, listEvent.y);
+		dragHandleRow = event.mods.isLeftButtonDown()
+			&& isDragHandlePosition(listEvent.getPosition()) ? row : -1;
 	}
 
 	void mouseMove(const MouseEvent& event) override
@@ -290,16 +912,12 @@ public:
 		activeArea.removeFromTop(16);
 		availableArea.removeFromTop(16);
 
-		activeInstructions.setBounds(activeArea.removeFromBottom(24));
-		activeArea.removeFromBottom(4);
 		activePlugins.setBounds(activeArea);
 		activeEmptyState.setBounds(activeArea);
-		bypassHeading.setBounds(activePlugins.getRight() - 43,
+		bypassHeading.setBounds(activePlugins.getRight() - 61,
 			activeGroup.getY(), 44, 16);
 
-		addButton.setBounds(availableArea.removeFromBottom(30));
-		availableArea.removeFromBottom(4);
-		availableInstructions.setBounds(availableArea.removeFromBottom(24));
+		addButton.setBounds(availableArea.removeFromBottom(44));
 		availableArea.removeFromBottom(4);
 		availablePlugins->setBounds(availableArea);
 
@@ -325,33 +943,56 @@ private:
 			graphics.fillAll(findColour(ListBox::backgroundColourId));
 
 		const std::vector<PluginDescription> plugins = owner.getTimeSortedList();
-		String name = String(row + 1) + ". " + plugins[row].name;
+		const String displayName = getDisplayNameForPlugin (plugins[row]);
+		String name = String(row + 1) + ". " + displayName;
+		const bool bypassed = getAppProperties().getUserSettings()->getBoolValue(
+			IconMenu::getKey("bypass", plugins[row]), false);
 		graphics.setColour(findColour(rowIsSelected
 			? TextEditor::highlightedTextColourId : ListBox::textColourId));
-		const bool bypassed = getAppProperties().getUserSettings()->getBoolValue(
-			IconMenu::getKey("bypass", plugins[row]));
 
-		graphics.drawText(name, 6, 0, width - 48, height,
+		const int gripWidth = 28;
+		graphics.setColour (Colour (0xffA8A4B8));
+		for (int dotRow = 0; dotRow < 3; ++dotRow)
+			for (int dotColumn = 0; dotColumn < 2; ++dotColumn)
+				graphics.fillEllipse (8.0f + dotColumn * 4.0f,
+					height * 0.5f - 5.0f + dotRow * 5.0f, 2.0f, 2.0f);
+
+		graphics.setColour(findColour(rowIsSelected
+			? TextEditor::highlightedTextColourId : ListBox::textColourId));
+		graphics.drawText(name, gripWidth, 0, width - gripWidth - 80, height,
 			Justification::centredLeft);
 
 		const juce::Rectangle<int> bypassBounds = getBypassBounds(width, height);
-		graphics.setColour(Colours::white);
-		graphics.fillRoundedRectangle(bypassBounds.toFloat(), 2.0f);
-		graphics.setColour(hoveredRow == row
-			&& hoveredAction == bypassActivePluginAction
-			? Colours::royalblue : Colours::darkgrey);
-		graphics.drawRoundedRectangle(bypassBounds.toFloat(), 2.0f, 1.2f);
+		graphics.setColour(bypassed ? Colour (0xff5B45D6) : Colours::white);
+		graphics.fillRoundedRectangle(bypassBounds.toFloat(), 4.0f);
+		graphics.setColour(bypassed ? Colour (0xff5B45D6)
+			: Colour (0xff8F8AA8));
+		graphics.drawRoundedRectangle(bypassBounds.toFloat(), 4.0f, 1.5f);
 		if (bypassed)
 		{
-			graphics.setColour(Colours::darkgreen);
+			graphics.setColour(Colours::white);
 			graphics.drawLine((float) bypassBounds.getX() + 3.0f,
 				(float) bypassBounds.getY() + bypassBounds.getHeight() * 0.55f,
 				(float) bypassBounds.getX() + bypassBounds.getWidth() * 0.42f,
-				(float) bypassBounds.getBottom() - 3.0f, 2.0f);
+				(float) bypassBounds.getBottom() - 4.0f, 2.0f);
 			graphics.drawLine((float) bypassBounds.getX() + bypassBounds.getWidth() * 0.42f,
-				(float) bypassBounds.getBottom() - 3.0f,
+				(float) bypassBounds.getBottom() - 4.0f,
 				(float) bypassBounds.getRight() - 3.0f,
-				(float) bypassBounds.getY() + 3.0f, 2.0f);
+				(float) bypassBounds.getY() + 4.0f, 2.0f);
+		}
+
+		if (hoveredRow == row)
+		{
+			const juce::Rectangle<int> menuBounds = getMenuBounds (width, height);
+			if (hoveredAction == menuActivePluginAction)
+			{
+				graphics.setColour (Colour (0xffDCD6F4));
+				graphics.fillEllipse (menuBounds.toFloat().expanded (3.0f));
+			}
+			graphics.setColour (Colour (0xff6B6880));
+			for (int dot = 0; dot < 3; ++dot)
+				graphics.fillEllipse (menuBounds.getCentreX() - 1.5f,
+					menuBounds.getY() + 2.0f + dot * 5.0f, 3.0f, 3.0f);
 		}
 
 		if (dragTargetIndex == row
@@ -375,17 +1016,21 @@ private:
 		if (event.mods.isPopupMenu())
 		{
 			activePlugins.selectRow(row, true, true);
-			PopupMenu contextMenu;
-			contextMenu.addItem(1, "Remove Plugin...");
-			const juce::Rectangle<int> menuAnchor(event.getScreenPosition().x,
-				event.getScreenPosition().y, 1, 1);
-			if (contextMenu.showAt(menuAnchor) == 1)
-				confirmRemovePlugin(row);
+			showPluginMenu (row, event.getScreenPosition());
 			return;
 		}
 
 		const ActivePluginHoveredAction action =
 			getActionAtPosition(listEvent.getPosition(), row);
+		if (action == menuActivePluginAction)
+		{
+			activePlugins.selectRow (row, true, true);
+			const juce::Rectangle<int> menuAnchor (event.getScreenPosition().x,
+				event.getScreenPosition().y, 1, 1);
+			showPluginMenu (row, menuAnchor.getPosition());
+			return;
+		}
+
 		if (action == bypassActivePluginAction)
 		{
 			owner.performPluginAction(owner.INDEX_BYPASS + row);
@@ -405,13 +1050,64 @@ private:
 			return;
 
 		if (AlertWindow::showOkCancelBox(AlertWindow::QuestionIcon,
-			"Remove Plugin", "Remove " + plugins[row].name
+			"Remove Plugin", "Remove " + getDisplayNameForPlugin (plugins[row])
 				+ " from your active plugins?",
 			"Remove", "Cancel"))
 		{
 			owner.performPluginAction(owner.INDEX_DELETE + row);
 			refreshActivePlugins();
 		}
+	}
+
+	void showPluginMenu (int row, Point<int> screenPosition)
+	{
+		if (row < 0 || row >= owner.activePluginList.getNumTypes())
+			return;
+
+		const Point<int> localPosition = getLocalPoint (nullptr, screenPosition);
+		const juce::Rectangle<int> menuAnchor (
+			localPosition.x, localPosition.y, 1, 1);
+		PluginActionMenuContent* content = new PluginActionMenuContent(
+			[this, row](int action)
+			{
+				if (action == 1)
+					renamePlugin(row);
+				else if (action == 2)
+					confirmRemovePlugin(row);
+			});
+		CallOutBox& callout = CallOutBox::launchAsynchronously(
+			content, menuAnchor, this);
+		callout.setLookAndFeel(&pluginActionMenuLookAndFeel);
+		callout.setArrowSize(0.0f);
+	}
+
+	void renamePlugin (int row)
+	{
+		const std::vector<PluginDescription> plugins = owner.getTimeSortedList();
+		if (row < 0 || row >= (int) plugins.size())
+			return;
+
+		const PluginDescription& plugin = plugins[row];
+		AlertWindow renameDialog ("Rename plugin", "Choose a display name for this plugin.",
+			AlertWindow::NoIcon, this);
+		renameDialog.addTextEditor ("name", getDisplayNameForPlugin (plugin), "Name:");
+		renameDialog.addButton ("Save", 1, KeyPress (KeyPress::returnKey));
+		renameDialog.addButton ("Cancel", 0, KeyPress (KeyPress::escapeKey));
+		if (renameDialog.runModalLoop() != 1)
+			return;
+
+		const String newName = renameDialog.getTextEditorContents ("name").trim();
+		if (newName.isEmpty())
+			return;
+
+		PropertiesFile* settings = getAppProperties().getUserSettings();
+		const String key = getDisplayNameKey (plugin);
+		if (newName == plugin.name)
+			settings->removeValue (key);
+		else
+			settings->setValue (key, newName);
+		settings->saveIfNeeded();
+		activePlugins.repaint();
 	}
 
 	void listBoxItemDoubleClicked(int row, const MouseEvent& event) override
@@ -439,7 +1135,7 @@ private:
 			return "Bypass this plugin";
 		}
 
-		return "Drag to reorder; double-click to open; right-click to remove";
+		return String();
 	}
 
 	void buttonClicked(Button* button) override
@@ -459,7 +1155,7 @@ private:
 
 	var getDragSourceDescription(const SparseSet<int>& rowsToDescribe) override
 	{
-		if (rowsToDescribe.size() != 1)
+		if (rowsToDescribe.size() != 1 || dragHandleRow != rowsToDescribe[0])
 			return var();
 
 		const int row = rowsToDescribe[0];
@@ -559,7 +1255,18 @@ private:
 
 	juce::Rectangle<int> getBypassBounds(int width, int height) const
 	{
-		return juce::Rectangle<int>(width - 30, (height - 18) / 2, 18, 18);
+		return juce::Rectangle<int>(width - 48, (height - 18) / 2, 18, 18);
+	}
+
+	juce::Rectangle<int> getMenuBounds (int width, int height) const
+	{
+		return juce::Rectangle<int> (width - 20, (height - 18) / 2, 12, 18);
+	}
+
+	bool isDragHandlePosition (Point<int> position) const
+	{
+		return position.x >= 0 && position.x < 28
+			&& activePlugins.getRowContainingPosition (position.x, position.y) >= 0;
 	}
 
 	ActivePluginHoveredAction getActionAtPosition(Point<int> position, int row) const
@@ -570,7 +1277,21 @@ private:
 		if (getBypassBounds(rowBounds.getWidth(), rowBounds.getHeight())
 			.contains(rowPosition))
 			return bypassActivePluginAction;
+		if (getMenuBounds (rowBounds.getWidth(), rowBounds.getHeight())
+			.contains (rowPosition))
+			return menuActivePluginAction;
 		return noActivePluginAction;
+	}
+
+	String getDisplayNameKey (const PluginDescription& plugin) const
+	{
+		return "plugin-display-name-" + plugin.createIdentifierString();
+	}
+
+	String getDisplayNameForPlugin (const PluginDescription& plugin) const
+	{
+		return getAppProperties().getUserSettings()->getValue (
+			getDisplayNameKey (plugin), plugin.name);
 	}
 
 	int getInsertionIndex(const Point<int>& position) const
@@ -606,38 +1327,204 @@ private:
 
 	IconMenu& owner;
 	GroupComponent activeGroup, availableGroup;
-	Label activeInstructions, availableInstructions, activeEmptyState, bypassHeading;
+	Label activeEmptyState, bypassHeading;
 	ListBox activePlugins;
 	TextButton addButton;
 	ScopedPointer<PluginListComponent> availablePlugins;
 	int hoveredRow;
 	ActivePluginHoveredAction hoveredAction;
 	int dragTargetIndex;
+	int dragHandleRow = -1;
+};
+
+class LightHostMainWindowContent : public Component,
+    private Button::Listener
+{
+public:
+    enum ViewType
+    {
+        pluginsView,
+        settingsView,
+        aboutView
+    };
+
+    explicit LightHostMainWindowContent (IconMenu& owner_)
+        : owner (owner_), currentView (pluginsView)
+    {
+        setOpaque (true);
+
+        titleBar.setText ("Light Host", dontSendNotification);
+        titleBar.setFont (Font (20.0f, Font::bold));
+        titleBar.setColour (Label::textColourId, Colour (0xff1D1B2E));
+        addAndMakeVisible (titleBar);
+
+        icon.setImage (ImageFileFormat::loadFrom (BinaryData::menu_icon_png, BinaryData::menu_icon_pngSize));
+        icon.setImagePlacement (RectanglePlacement::centred);
+        icon.setInterceptsMouseClicks (false, false);
+        addAndMakeVisible (icon);
+
+        pluginsButton.setButtonText ("Plugins");
+        pluginsButton.setColour (TextButton::textColourOnId, Colour (0xff3B2AA8));
+        pluginsButton.setColour (TextButton::textColourOffId, Colour (0xff1D1B2E));
+        pluginsButton.setClickingTogglesState (true);
+        pluginsButton.setToggleState (true, dontSendNotification);
+        addAndMakeVisible (pluginsButton);
+        pluginsButton.addListener (this);
+
+        settingsButton.setButtonText ("Settings");
+        settingsButton.setColour (TextButton::textColourOnId, Colour (0xff3B2AA8));
+        settingsButton.setColour (TextButton::textColourOffId, Colour (0xff1D1B2E));
+        settingsButton.setClickingTogglesState (true);
+        addAndMakeVisible (settingsButton);
+        settingsButton.addListener (this);
+
+        aboutButton.setButtonText ("About");
+        aboutButton.setColour (TextButton::textColourOnId, Colour (0xff3B2AA8));
+        aboutButton.setColour (TextButton::textColourOffId, Colour (0xff1D1B2E));
+        aboutButton.setClickingTogglesState (true);
+        addAndMakeVisible (aboutButton);
+        aboutButton.addListener (this);
+
+        readyStatus.setText ("Ready", dontSendNotification);
+        readyStatus.setFont (Font (13.0f));
+        readyStatus.setColour (Label::textColourId, Colour (0xff6B6880));
+        addAndMakeVisible (readyStatus);
+
+        readyDot.setSize (8, 8);
+        addAndMakeVisible (readyDot);
+
+        pluginsPanel = new IconMenu::PluginManagementComponent (owner);
+        settingsPanel = new LightHostSettingsView (owner);
+        aboutPanel = new LightHostAboutView();
+
+        addAndMakeVisible (pluginsPanel);
+        addAndMakeVisible (settingsPanel);
+        addAndMakeVisible (aboutPanel);
+
+        setView (pluginsView);
+    }
+
+    void setView (ViewType newView)
+    {
+        currentView = newView;
+        pluginsButton.setToggleState (newView == pluginsView, dontSendNotification);
+        settingsButton.setToggleState (newView == settingsView, dontSendNotification);
+        aboutButton.setToggleState (newView == aboutView, dontSendNotification);
+
+        pluginsPanel->setVisible (newView == pluginsView);
+        settingsPanel->setVisible (newView == settingsView);
+        aboutPanel->setVisible (newView == aboutView);
+        repaint();
+    }
+
+    void refreshActivePlugins()
+    {
+        if (auto* management = dynamic_cast<IconMenu::PluginManagementComponent*> (pluginsPanel.get()))
+            management->refreshActivePlugins();
+    }
+
+    void paint (Graphics& g) override
+    {
+        g.fillAll (Colour (0xffF4F3FB));
+    }
+
+    void resized() override
+    {
+        juce::Rectangle<int> area (getLocalBounds());
+        const int headerHeight = 48;
+        const int sidebarWidth = 156;
+
+        juce::Rectangle<int> headerArea = area.removeFromTop (headerHeight);
+        icon.setBounds (headerArea.removeFromLeft (40).withTrimmedLeft (10).withTrimmedRight (10).withTrimmedTop (8).withTrimmedBottom (8));
+        titleBar.setBounds (headerArea.withTrimmedLeft (8));
+
+        juce::Rectangle<int> bodyArea (area);
+        juce::Rectangle<int> sidebarArea = bodyArea.removeFromLeft (sidebarWidth);
+
+        sidebarArea.reduce (8, 8);
+        pluginsButton.setBounds (sidebarArea.removeFromTop (46));
+        settingsButton.setBounds (sidebarArea.removeFromTop (46));
+        aboutButton.setBounds (sidebarArea.removeFromTop (46));
+
+        sidebarArea.removeFromTop (12);
+        juce::Rectangle<int> statusArea = sidebarArea.removeFromBottom (22);
+        readyDot.setBounds (statusArea.removeFromLeft (10).withTrimmedLeft (1).withTrimmedRight (1).withTrimmedTop (6).withTrimmedBottom (6));
+        readyStatus.setBounds (statusArea);
+
+        const juce::Rectangle<int> contentArea (bodyArea.reduced (12, 12));
+        pluginsPanel->setBounds (contentArea);
+        settingsPanel->setBounds (contentArea);
+        aboutPanel->setBounds (contentArea);
+    }
+
+    void buttonClicked (Button* button) override
+    {
+        if (button == &pluginsButton)
+            setView (pluginsView);
+        else if (button == &settingsButton)
+            setView (settingsView);
+        else if (button == &aboutButton)
+            setView (aboutView);
+    }
+
+private:
+    IconMenu& owner;
+    ViewType currentView;
+    ImageComponent icon;
+    Label titleBar;
+    TextButton pluginsButton, settingsButton, aboutButton;
+    Label readyStatus;
+    StatusDotComponent readyDot;
+    ScopedPointer<Component> pluginsPanel;
+    ScopedPointer<Component> settingsPanel;
+    ScopedPointer<Component> aboutPanel;
 };
 
 class IconMenu::PluginListWindow : public DocumentWindow
 {
 public:
 	explicit PluginListWindow(IconMenu& owner_)
-		: DocumentWindow("Plugins", Colours::white,
+		: DocumentWindow("Light Host", Colours::white,
 			DocumentWindow::minimiseButton | DocumentWindow::closeButton),
-		owner(owner_), managementComponent(new PluginManagementComponent(owner_))
+		owner(owner_), content(new LightHostMainWindowContent(owner_))
 	{
-		setContentOwned(managementComponent, true);
-
+		setContentOwned(content, true);
 		setUsingNativeTitleBar(true);
-		setResizable(true, false);
-		setResizeLimits(820, 500, 1400, 1000);
+		setResizable(true, true);
+		setResizeLimits(1000, 520, 1400, 1000);
 		setTopLeftPosition(60, 60);
-
-		restoreWindowStateFromString(getAppProperties().getUserSettings()->getValue("listWindowPos"));
+		setSize(1000, 520);
 		setVisible(true);
 	}
 
 	void refreshActivePlugins()
 	{
-		if (managementComponent != nullptr)
-			managementComponent->refreshActivePlugins();
+		if (content != nullptr)
+			content->refreshActivePlugins();
+	}
+
+	void showPluginsView()
+	{
+		if (content != nullptr)
+			content->setView(LightHostMainWindowContent::pluginsView);
+		setVisible(true);
+		toFront(true);
+	}
+
+	void showSettingsView()
+	{
+		if (content != nullptr)
+			content->setView(LightHostMainWindowContent::settingsView);
+		setVisible(true);
+		toFront(true);
+	}
+
+	void showAboutView()
+	{
+		if (content != nullptr)
+			content->setView(LightHostMainWindowContent::aboutView);
+		setVisible(true);
+		toFront(true);
 	}
 
 	~PluginListWindow()
@@ -646,21 +1533,17 @@ public:
 			getAppProperties().getUserSettings()->setValue("listWindowPos", getWindowStateAsString());
 
 		clearContentComponent();
-		managementComponent = nullptr;
+		content = nullptr;
 	}
 
 	void closeButtonPressed()
 	{
-        owner.removePluginsLackingInputOutput();
-        #if JUCE_MAC
-        Process::setDockIconVisible(false);
-        #endif
-		owner.pluginListWindow = nullptr;
+		setVisible(false);
 	}
 
 private:
 	IconMenu& owner;
-	PluginManagementComponent* managementComponent;
+	ScopedPointer<LightHostMainWindowContent> content;
 };
 
 IconMenu::IconMenu() : INDEX_EDIT(1000000), INDEX_BYPASS(2000000), INDEX_DELETE(3000000), INDEX_MOVE_UP(4000000), INDEX_MOVE_DOWN(5000000)
@@ -728,6 +1611,15 @@ void IconMenu::setIcon()
 	#endif
 }
 
+void IconMenu::toggleIconColor()
+{
+    String color = getAppProperties().getUserSettings()->getValue("icon");
+    const String nextColor = color.equalsIgnoreCase("black") ? "white" : "black";
+    getAppProperties().getUserSettings()->setValue("icon", nextColor);
+    getAppProperties().saveIfNeeded();
+    setIcon();
+}
+
 void IconMenu::loadActivePlugins()
 {
 	const int INPUT = 1000000;
@@ -757,7 +1649,12 @@ void IconMenu::loadActivePlugins()
         String savedPluginState = getAppProperties().getUserSettings()->getValue(pluginUid);
         MemoryBlock savedPluginBinary;
         savedPluginBinary.fromBase64Encoding(savedPluginState);
-        instance->setStateInformation(savedPluginBinary.getData(), savedPluginBinary.getSize());
+        const size_t savedPluginStateSize = savedPluginBinary.getSize();
+        if (savedPluginStateSize > static_cast<size_t>(INT_MAX))
+            Logger::writeToLog("Plugin state is too large to restore: " + plugin.name);
+        else
+            instance->setStateInformation(savedPluginBinary.getData(),
+                static_cast<int>(savedPluginStateSize));
         graph.addNode(instance, i);
 		String key = getKey("bypass", plugin);
 		bool bypass = getAppProperties().getUserSettings()->getBoolValue(key, false);
@@ -851,26 +1748,20 @@ void IconMenu::timerCallback()
 {
     stopTimer();
     menu.clear();
+	menu.setLookAndFeel(&trayMenuLookAndFeel);
     menu.addSectionHeader(JUCEApplication::getInstance()->getApplicationName());
-	menu.addItem(menuAudioSettings, "Audio Settings...");
-	menu.addItem(menuPlugins, "Plugins...");
+    menu.addItem(menuOpenLightHost, "Open Light Host");
 #if JUCE_WINDOWS
     bool runOnStartup = false;
     getRunOnStartupEnabled(runOnStartup);
     menu.addItem(menuRunOnStartup, "Run on startup", true, runOnStartup);
 #endif
     menu.addSeparator();
-    menu.addItem(menuImportBackup, "Import Backup...");
-    menu.addItem(menuExportBackup, "Export Backup...");
-	menu.addSeparator();
-	menu.addItem(menuDeletePluginStates, "Delete Plugin States");
-#if !JUCE_MAC
-	menu.addItem(menuInvertIconColor, "Invert Icon Color");
-#endif
-	menu.addSeparator();
-	menu.addItem(menuQuit, "Quit");
+    menu.addColouredItem(menuQuit, "Quit", Colour(0xffC42B2B));
 	#if JUCE_MAC || JUCE_LINUX
-    menu.showMenuAsync(PopupMenu::Options().withTargetComponent(this), ModalCallbackFunction::forComponent(menuInvocationCallback, this));
+    menu.showMenuAsync(PopupMenu::Options().withTargetComponent(this)
+		.withMinimumWidth(240).withStandardItemHeight(36),
+		ModalCallbackFunction::forComponent(menuInvocationCallback, this));
 	#else
 	if (x == 0 || y == 0)
 	{
@@ -882,7 +1773,9 @@ void IconMenu::timerCallback()
 		y = iconLocation.y;
 	}
 	juce::Rectangle<int> rect(x, y, 1, 1);
-	menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea(rect), ModalCallbackFunction::forComponent(menuInvocationCallback, this));
+	menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea(rect)
+		.withMinimumWidth(240).withStandardItemHeight(36),
+		ModalCallbackFunction::forComponent(menuInvocationCallback, this));
 	#endif
 }
 
@@ -945,37 +1838,13 @@ void IconMenu::menuInvocationCallback(int id, IconMenu* im)
 
     switch (id)
     {
-    case menuAudioSettings:
-        im->showAudioSettings();
-        break;
-    case menuPlugins:
+    case menuOpenLightHost:
         im->reloadPlugins();
-        break;
-    case menuImportBackup:
-        if (im->importBackup())
-            JUCEApplication::getInstance()->quit();
-        break;
-    case menuExportBackup:
-        im->exportBackup();
         break;
 #if JUCE_WINDOWS
     case menuRunOnStartup:
         toggleRunOnStartup();
         break;
-#endif
-    case menuDeletePluginStates:
-        im->deletePluginStates();
-        im->loadActivePlugins();
-        break;
-#if !JUCE_MAC
-    case menuInvertIconColor:
-    {
-        String color = getAppProperties().getUserSettings()->getValue("icon");
-        getAppProperties().getUserSettings()->setValue("icon",
-            color.equalsIgnoreCase("black") ? "white" : "black");
-        im->setIcon();
-        break;
-    }
 #endif
     case menuQuit:
         JUCEApplication::getInstance()->quit();
@@ -1512,22 +2381,12 @@ bool IconMenu::importBackup()
 
 void IconMenu::showAudioSettings()
 {
-    AudioDeviceSelectorComponent audioSettingsComp (deviceManager, 0, 256, 0, 256, false, false, true, true);
-    audioSettingsComp.setSize(500, 450);
-    
-    DialogWindow::LaunchOptions o;
-    o.content.setNonOwned(&audioSettingsComp);
-    o.dialogTitle                   = "Audio Settings";
-    o.componentToCentreAround       = this;
-    o.dialogBackgroundColour        = Colour::fromRGB(236, 236, 236);
-    o.escapeKeyTriggersCloseButton  = true;
-    o.useNativeTitleBar             = true;
-    o.resizable                     = false;
+    if (pluginListWindow == nullptr)
+        pluginListWindow = new PluginListWindow(*this);
+    pluginListWindow->showSettingsView();
+    pluginListWindow->toFront(true);
 
-    o.runModal();
-        
     ScopedPointer<XmlElement> audioState(deviceManager.createStateXml());
-        
     getAppProperties().getUserSettings()->setValue("audioDeviceState", audioState);
     getAppProperties().getUserSettings()->saveIfNeeded();
 }
@@ -1536,6 +2395,7 @@ void IconMenu::reloadPlugins()
 {
 	if (pluginListWindow == nullptr)
 		pluginListWindow = new PluginListWindow(*this);
+	pluginListWindow->showPluginsView();
 	pluginListWindow->toFront(true);
 }
 

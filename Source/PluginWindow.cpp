@@ -72,7 +72,9 @@ public:
 
     void refresh() { }
     virtual void audioProcessorChanged (AudioProcessor*) { }
-    virtual void audioProcessorParameterChanged(AudioProcessor* processor, int, float) { }
+    void audioProcessorParameterChanged(AudioProcessor*, int, float) override
+    {
+    }
 
 private:
     AudioProcessor& owner;
