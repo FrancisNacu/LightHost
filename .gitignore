@@ -1,3 +1,4 @@
-Builds/
-JuceLibraryCode/
-lib/
+/Builds/
+/JuceLibraryCode/
+/lib/
+/dist/

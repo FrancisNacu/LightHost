@@ -9,6 +9,7 @@
 #include "../JuceLibraryCode/JuceHeader.h"
 #include "IconMenu.hpp"
 #include "PluginWindow.h"
+#include <algorithm>
 #include <ctime>
 #include <limits.h>
 #include <string>
@@ -18,6 +19,26 @@
 
 namespace
 {
+enum
+{
+	menuAudioSettings = 1,
+	menuPlugins,
+	menuImportBackup,
+	menuExportBackup,
+	menuRunOnStartup,
+	menuDeletePluginStates,
+	menuInvertIconColor,
+	menuQuit
+};
+
+enum ActivePluginHoveredAction
+{
+	noActivePluginAction,
+	bypassActivePluginAction
+};
+
+const char* const activePluginDragPrefix = "active-plugin:";
+
 bool addPluginFilesToArchive(ZipFile::Builder& archive, const File& pluginFile,
 	const String& archiveRoot)
 {
@@ -163,29 +184,460 @@ void toggleRunOnStartup()
 #endif
 }
 
+class IconMenu::PluginManagementComponent : public Component,
+	public DragAndDropContainer, public DragAndDropTarget,
+	private ListBoxModel, private Button::Listener
+{
+public:
+	PluginManagementComponent(IconMenu& owner_)
+		: owner(owner_), activePlugins("Active Plugins", this),
+		  addButton("Add to Active Plugins"),
+		  hoveredRow(-1), hoveredAction(noActivePluginAction), dragTargetIndex(-1)
+	{
+		activeGroup.setText("Active Plugins");
+		availableGroup.setText("Available Plugins");
+		addAndMakeVisible(activeGroup);
+		addAndMakeVisible(availableGroup);
+		bypassHeading.setText("Bypass", dontSendNotification);
+		bypassHeading.setJustificationType(Justification::centred);
+		bypassHeading.setFont(Font(12.0f, Font::bold));
+		bypassHeading.setTooltip("Check a plugin to bypass it");
+		addAndMakeVisible(bypassHeading);
+
+		activeInstructions.setText(
+			"Drag to reorder. Right-click a plugin to remove it; double-click to open.",
+			dontSendNotification);
+		availableInstructions.setText(
+			"Select a plugin below and add it to your active chain.",
+			dontSendNotification);
+		activeInstructions.setFont(Font(13.0f));
+		availableInstructions.setFont(Font(13.0f));
+		activeInstructions.setColour(Label::textColourId, Colours::darkgrey);
+		availableInstructions.setColour(Label::textColourId, Colours::darkgrey);
+		addAndMakeVisible(activeInstructions);
+		addAndMakeVisible(availableInstructions);
+
+		activePlugins.setRowHeight(26);
+		addAndMakeVisible(activePlugins);
+		activePlugins.addMouseListener(this, true);
+
+		const File deadMansPedalFile(getAppProperties().getUserSettings()
+			->getFile().getSiblingFile("RecentlyCrashedPluginsList"));
+		availablePlugins = new PluginListComponent(owner.formatManager,
+			owner.knownPluginList, deadMansPedalFile,
+			getAppProperties().getUserSettings());
+		addAndMakeVisible(availablePlugins);
+		availablePlugins->getTableListBox().addMouseListener(this, true);
+
+		activeEmptyState.setText(
+			"No active plugins. Add one from Available Plugins.",
+			dontSendNotification);
+		activeEmptyState.setJustificationType(Justification::centred);
+		activeEmptyState.setColour(Label::textColourId, Colours::darkgrey);
+		activeEmptyState.setInterceptsMouseClicks(false, false);
+		addAndMakeVisible(activeEmptyState);
+
+		Button* const buttons[] = {
+			&addButton
+		};
+		for (int i = 0; i < (int) numElementsInArray(buttons); ++i)
+		{
+			addAndMakeVisible(buttons[i]);
+			buttons[i]->addListener(this);
+		}
+
+		refreshActivePlugins();
+		setSize(1000, 600);
+	}
+
+	void refreshActivePlugins()
+	{
+		activePlugins.updateContent();
+		activeEmptyState.setVisible(owner.activePluginList.getNumTypes() == 0);
+		updateAddButton();
+		activePlugins.repaint();
+	}
+
+	void mouseUp(const MouseEvent&) override
+	{
+		updateAddButton();
+	}
+
+	void mouseMove(const MouseEvent& event) override
+	{
+		updateActiveHover(event);
+	}
+
+	void mouseExit(const MouseEvent& event) override
+	{
+		updateActiveHover(event);
+	}
+
+	void resized() override
+	{
+		juce::Rectangle<int> contentBounds(getLocalBounds().reduced(10));
+		const int gap = 12;
+		const int activeWidth = (contentBounds.getWidth() - gap) * 2 / 5;
+		juce::Rectangle<int> activeArea = contentBounds.removeFromLeft(activeWidth);
+		contentBounds.removeFromLeft(gap);
+		juce::Rectangle<int> availableArea = contentBounds;
+
+		activeGroup.setBounds(activeArea);
+		availableGroup.setBounds(availableArea);
+
+		activeArea = activeArea.reduced(10);
+		availableArea = availableArea.reduced(10);
+		activeArea.removeFromTop(16);
+		availableArea.removeFromTop(16);
+
+		activeInstructions.setBounds(activeArea.removeFromBottom(24));
+		activeArea.removeFromBottom(4);
+		activePlugins.setBounds(activeArea);
+		activeEmptyState.setBounds(activeArea);
+		bypassHeading.setBounds(activePlugins.getRight() - 43,
+			activeGroup.getY(), 44, 16);
+
+		addButton.setBounds(availableArea.removeFromBottom(30));
+		availableArea.removeFromBottom(4);
+		availableInstructions.setBounds(availableArea.removeFromBottom(24));
+		availableArea.removeFromBottom(4);
+		availablePlugins->setBounds(availableArea);
+
+	}
+
+private:
+	int getNumRows() override
+	{
+		return owner.activePluginList.getNumTypes();
+	}
+
+	void paintListBoxItem(int row, Graphics& graphics, int width, int height,
+		bool rowIsSelected) override
+	{
+		if (row < 0 || row >= owner.activePluginList.getNumTypes())
+			return;
+
+		if (rowIsSelected)
+			graphics.fillAll(findColour(TextEditor::highlightColourId));
+		else if (row == hoveredRow)
+			graphics.fillAll(findColour(TextEditor::highlightColourId).withAlpha(0.2f));
+		else
+			graphics.fillAll(findColour(ListBox::backgroundColourId));
+
+		const std::vector<PluginDescription> plugins = owner.getTimeSortedList();
+		String name = String(row + 1) + ". " + plugins[row].name;
+		graphics.setColour(findColour(rowIsSelected
+			? TextEditor::highlightedTextColourId : ListBox::textColourId));
+		const bool bypassed = getAppProperties().getUserSettings()->getBoolValue(
+			IconMenu::getKey("bypass", plugins[row]));
+
+		graphics.drawText(name, 6, 0, width - 48, height,
+			Justification::centredLeft);
+
+		const juce::Rectangle<int> bypassBounds = getBypassBounds(width, height);
+		graphics.setColour(Colours::white);
+		graphics.fillRoundedRectangle(bypassBounds.toFloat(), 2.0f);
+		graphics.setColour(hoveredRow == row
+			&& hoveredAction == bypassActivePluginAction
+			? Colours::royalblue : Colours::darkgrey);
+		graphics.drawRoundedRectangle(bypassBounds.toFloat(), 2.0f, 1.2f);
+		if (bypassed)
+		{
+			graphics.setColour(Colours::darkgreen);
+			graphics.drawLine((float) bypassBounds.getX() + 3.0f,
+				(float) bypassBounds.getY() + bypassBounds.getHeight() * 0.55f,
+				(float) bypassBounds.getX() + bypassBounds.getWidth() * 0.42f,
+				(float) bypassBounds.getBottom() - 3.0f, 2.0f);
+			graphics.drawLine((float) bypassBounds.getX() + bypassBounds.getWidth() * 0.42f,
+				(float) bypassBounds.getBottom() - 3.0f,
+				(float) bypassBounds.getRight() - 3.0f,
+				(float) bypassBounds.getY() + 3.0f, 2.0f);
+		}
+
+		if (dragTargetIndex == row
+			|| (row == owner.activePluginList.getNumTypes() - 1
+				&& dragTargetIndex == owner.activePluginList.getNumTypes()))
+		{
+			graphics.setColour(Colours::deepskyblue);
+			graphics.fillRect(0, dragTargetIndex == row ? 0 : height - 2, width, 2);
+		}
+	}
+
+	void listBoxItemClicked(int row, const MouseEvent& event) override
+	{
+		if (event.getNumberOfClicks() > 1)
+			return;
+
+		const MouseEvent listEvent = event.getEventRelativeTo(&activePlugins);
+		if (row < 0 || row >= owner.activePluginList.getNumTypes())
+			return;
+
+		if (event.mods.isPopupMenu())
+		{
+			activePlugins.selectRow(row, true, true);
+			PopupMenu contextMenu;
+			contextMenu.addItem(1, "Remove Plugin...");
+			const juce::Rectangle<int> menuAnchor(event.getScreenPosition().x,
+				event.getScreenPosition().y, 1, 1);
+			if (contextMenu.showAt(menuAnchor) == 1)
+				confirmRemovePlugin(row);
+			return;
+		}
+
+		const ActivePluginHoveredAction action =
+			getActionAtPosition(listEvent.getPosition(), row);
+		if (action == bypassActivePluginAction)
+		{
+			owner.performPluginAction(owner.INDEX_BYPASS + row);
+			refreshActivePlugins();
+		}
+	}
+
+	void deleteKeyPressed(int row) override
+	{
+		confirmRemovePlugin(row);
+	}
+
+	void confirmRemovePlugin(int row)
+	{
+		const std::vector<PluginDescription> plugins = owner.getTimeSortedList();
+		if (row < 0 || row >= (int) plugins.size())
+			return;
+
+		if (AlertWindow::showOkCancelBox(AlertWindow::QuestionIcon,
+			"Remove Plugin", "Remove " + plugins[row].name
+				+ " from your active plugins?",
+			"Remove", "Cancel"))
+		{
+			owner.performPluginAction(owner.INDEX_DELETE + row);
+			refreshActivePlugins();
+		}
+	}
+
+	void listBoxItemDoubleClicked(int row, const MouseEvent& event) override
+	{
+		if (row < 0 || row >= owner.activePluginList.getNumTypes())
+			return;
+
+		const MouseEvent listEvent = event.getEventRelativeTo(&activePlugins);
+		if (getActionAtPosition(listEvent.getPosition(), row) == noActivePluginAction)
+			owner.performPluginAction(owner.INDEX_EDIT + row);
+	}
+
+	String getTooltipForRow(int row) override
+	{
+		if (row != hoveredRow)
+			return String();
+
+		if (hoveredAction == bypassActivePluginAction)
+		{
+			const std::vector<PluginDescription> plugins = owner.getTimeSortedList();
+			if (row >= 0 && row < (int) plugins.size()
+				&& getAppProperties().getUserSettings()->getBoolValue(
+					IconMenu::getKey("bypass", plugins[row])))
+				return "Enable this plugin";
+			return "Bypass this plugin";
+		}
+
+		return "Drag to reorder; double-click to open; right-click to remove";
+	}
+
+	void buttonClicked(Button* button) override
+	{
+		if (button == &addButton)
+		{
+			const int row = availablePlugins->getTableListBox().getSelectedRow();
+			if (row >= 0 && row < owner.knownPluginList.getNumTypes())
+			{
+				owner.addPluginToActiveList(*owner.knownPluginList.getType(row));
+				refreshActivePlugins();
+			}
+			return;
+		}
+
+	}
+
+	var getDragSourceDescription(const SparseSet<int>& rowsToDescribe) override
+	{
+		if (rowsToDescribe.size() != 1)
+			return var();
+
+		const int row = rowsToDescribe[0];
+		const std::vector<PluginDescription> plugins = owner.getTimeSortedList();
+		if (row < 0 || row >= (int) plugins.size())
+			return var();
+
+		return String(activePluginDragPrefix) + IconMenu::getKey("order", plugins[row]);
+	}
+
+	bool isInterestedInDragSource(const SourceDetails& details) override
+	{
+		return details.sourceComponent.get() == &activePlugins
+			&& details.description.toString().startsWith(activePluginDragPrefix);
+	}
+
+	void itemDragEnter(const SourceDetails& details) override
+	{
+		updateDragTarget(details);
+	}
+
+	void itemDragMove(const SourceDetails& details) override
+	{
+		updateDragTarget(details);
+	}
+
+	void itemDragExit(const SourceDetails&) override
+	{
+		setDragTargetIndex(-1);
+	}
+
+	void itemDropped(const SourceDetails& details) override
+	{
+		const String description = details.description.toString();
+		if (!description.startsWith(activePluginDragPrefix))
+		{
+			setDragTargetIndex(-1);
+			return;
+		}
+
+		const String pluginOrderKey = description.substring(
+			String(activePluginDragPrefix).length());
+		const std::vector<PluginDescription> plugins = owner.getTimeSortedList();
+		int fromIndex = -1;
+		for (int i = 0; i < (int) plugins.size(); ++i)
+			if (pluginOrderKey == IconMenu::getKey("order", plugins[i]))
+			{
+				fromIndex = i;
+				break;
+			}
+
+		if (fromIndex >= 0 && !plugins.empty())
+		{
+			const Point<int> listPosition =
+				activePlugins.getLocalPoint(this, details.localPosition);
+			int toIndex = getInsertionIndex(listPosition);
+			if (toIndex > fromIndex)
+				--toIndex;
+			toIndex = jlimit(0, (int) plugins.size() - 1, toIndex);
+			owner.moveActivePlugin(fromIndex, toIndex);
+			activePlugins.selectRow(toIndex, true, true);
+			refreshActivePlugins();
+		}
+
+		setDragTargetIndex(-1);
+	}
+
+	void updateAddButton()
+	{
+		const int row = availablePlugins->getTableListBox().getSelectedRow();
+		addButton.setEnabled(row >= 0 && row < owner.knownPluginList.getNumTypes());
+	}
+
+	void updateActiveHover(const MouseEvent& event)
+	{
+		if (!activePlugins.isParentOf(event.eventComponent)
+			&& event.eventComponent != &activePlugins)
+			return;
+
+		const MouseEvent listEvent = event.getEventRelativeTo(&activePlugins);
+		const bool insideList = activePlugins.getLocalBounds().contains(listEvent.getPosition());
+		const int row = insideList
+			? activePlugins.getRowContainingPosition(listEvent.x, listEvent.y) : -1;
+		const ActivePluginHoveredAction action = row >= 0
+			? getActionAtPosition(listEvent.getPosition(), row) : noActivePluginAction;
+		if (row == hoveredRow && action == hoveredAction)
+			return;
+
+		const int previousRow = hoveredRow;
+		hoveredRow = row;
+		hoveredAction = action;
+		if (previousRow >= 0)
+			activePlugins.repaint(activePlugins.getRowPosition(previousRow, true));
+		if (hoveredRow >= 0)
+			activePlugins.repaint(activePlugins.getRowPosition(hoveredRow, true));
+	}
+
+	juce::Rectangle<int> getBypassBounds(int width, int height) const
+	{
+		return juce::Rectangle<int>(width - 30, (height - 18) / 2, 18, 18);
+	}
+
+	ActivePluginHoveredAction getActionAtPosition(Point<int> position, int row) const
+	{
+		const juce::Rectangle<int> rowBounds = activePlugins.getRowPosition(row, true);
+		const Point<int> rowPosition(position.x - rowBounds.getX(),
+			position.y - rowBounds.getY());
+		if (getBypassBounds(rowBounds.getWidth(), rowBounds.getHeight())
+			.contains(rowPosition))
+			return bypassActivePluginAction;
+		return noActivePluginAction;
+	}
+
+	int getInsertionIndex(const Point<int>& position) const
+	{
+		const int numRows = owner.activePluginList.getNumTypes();
+		if (numRows == 0 || position.y < 0)
+			return 0;
+		if (position.y >= activePlugins.getHeight())
+			return numRows;
+
+		const int row = activePlugins.getRowContainingPosition(position.x, position.y);
+		if (row < 0)
+			return numRows;
+
+		const juce::Rectangle<int> rowBounds = activePlugins.getRowPosition(row, true);
+		return row + (position.y >= rowBounds.getCentreY() ? 1 : 0);
+	}
+
+	void setDragTargetIndex(int index)
+	{
+		if (dragTargetIndex != index)
+		{
+			dragTargetIndex = index;
+			activePlugins.repaint();
+		}
+	}
+
+	void updateDragTarget(const SourceDetails& details)
+	{
+		const Point<int> listPosition = activePlugins.getLocalPoint(this, details.localPosition);
+		setDragTargetIndex(getInsertionIndex(listPosition));
+	}
+
+	IconMenu& owner;
+	GroupComponent activeGroup, availableGroup;
+	Label activeInstructions, availableInstructions, activeEmptyState, bypassHeading;
+	ListBox activePlugins;
+	TextButton addButton;
+	ScopedPointer<PluginListComponent> availablePlugins;
+	int hoveredRow;
+	ActivePluginHoveredAction hoveredAction;
+	int dragTargetIndex;
+};
+
 class IconMenu::PluginListWindow : public DocumentWindow
 {
 public:
-	PluginListWindow(IconMenu& owner_, AudioPluginFormatManager& pluginFormatManager)
-		: DocumentWindow("Available Plugins", Colours::white,
+	explicit PluginListWindow(IconMenu& owner_)
+		: DocumentWindow("Plugins", Colours::white,
 			DocumentWindow::minimiseButton | DocumentWindow::closeButton),
-		owner(owner_)
+		owner(owner_), managementComponent(new PluginManagementComponent(owner_))
 	{
-		const File deadMansPedalFile(getAppProperties().getUserSettings()
-			->getFile().getSiblingFile("RecentlyCrashedPluginsList"));
-
-		setContentOwned(new PluginListComponent(pluginFormatManager,
-			owner.knownPluginList,
-			deadMansPedalFile,
-			getAppProperties().getUserSettings()), true);
+		setContentOwned(managementComponent, true);
 
 		setUsingNativeTitleBar(true);
 		setResizable(true, false);
-		setResizeLimits(300, 400, 800, 1500);
+		setResizeLimits(820, 500, 1400, 1000);
 		setTopLeftPosition(60, 60);
 
 		restoreWindowStateFromString(getAppProperties().getUserSettings()->getValue("listWindowPos"));
 		setVisible(true);
+	}
+
+	void refreshActivePlugins()
+	{
+		if (managementComponent != nullptr)
+			managementComponent->refreshActivePlugins();
 	}
 
 	~PluginListWindow()
@@ -194,6 +646,7 @@ public:
 			getAppProperties().getUserSettings()->setValue("listWindowPos", getWindowStateAsString());
 
 		clearContentComponent();
+		managementComponent = nullptr;
 	}
 
 	void closeButtonPressed()
@@ -207,12 +660,14 @@ public:
 
 private:
 	IconMenu& owner;
+	PluginManagementComponent* managementComponent;
 };
 
 IconMenu::IconMenu() : INDEX_EDIT(1000000), INDEX_BYPASS(2000000), INDEX_DELETE(3000000), INDEX_MOVE_UP(4000000), INDEX_MOVE_DOWN(5000000)
 {
     // Initiialization
 	settingsImported = false;
+	lastLeftClickTime = 0;
     formatManager.addDefaultFormats();
 	#if JUCE_WINDOWS
 	x = y = 0;
@@ -226,7 +681,6 @@ IconMenu::IconMenu() : INDEX_EDIT(1000000), INDEX_BYPASS(2000000), INDEX_DELETE(
     ScopedPointer<XmlElement> savedPluginList(getAppProperties().getUserSettings()->getXmlValue("pluginList"));
     if (savedPluginList != nullptr)
         knownPluginList.recreateFromXml(*savedPluginList);
-    pluginSortMethod = KnownPluginList::sortByManufacturer;
     knownPluginList.addChangeListener(this);
     // Plugins - active
     ScopedPointer<XmlElement> savedPluginListActive(getAppProperties().getUserSettings()->getXmlValue("pluginListActive"));
@@ -240,7 +694,11 @@ IconMenu::IconMenu() : INDEX_EDIT(1000000), INDEX_BYPASS(2000000), INDEX_DELETE(
 
 IconMenu::~IconMenu()
 {
+	deviceManager.removeAudioCallback(&player);
+	PluginWindow::closeAllCurrentlyOpenWindows();
+	pluginListWindow = nullptr;
 	savePluginStates();
+	player.setProcessor(nullptr);
 }
 
 void IconMenu::setIcon()
@@ -277,6 +735,7 @@ void IconMenu::loadActivePlugins()
 	const int CHANNEL_ONE = 0;
 	const int CHANNEL_TWO = 1;
 	PluginWindow::closeAllCurrentlyOpenWindows();
+	player.setProcessor(nullptr);
     graph.clear();
     inputNode = graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioInputNode), INPUT);
     outputNode = graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioOutputNode), OUTPUT);
@@ -324,6 +783,7 @@ void IconMenu::loadActivePlugins()
 		graph.addConnection(lastId, CHANNEL_ONE, OUTPUT, CHANNEL_ONE);
 		graph.addConnection(lastId, CHANNEL_TWO, OUTPUT, CHANNEL_TWO);
 	}
+	player.setProcessor(&graph);
 }
 
 PluginDescription IconMenu::getNextPluginOlderThanTime(int &time)
@@ -366,6 +826,8 @@ void IconMenu::changeListenerCallback(ChangeBroadcaster* changed)
             getAppProperties().getUserSettings()->setValue ("pluginListActive", savedPluginList);
             getAppProperties().saveIfNeeded();
         }
+        if (pluginListWindow != nullptr)
+            pluginListWindow->refreshActivePlugins();
     }
 }
 
@@ -390,52 +852,23 @@ void IconMenu::timerCallback()
     stopTimer();
     menu.clear();
     menu.addSectionHeader(JUCEApplication::getInstance()->getApplicationName());
-    if (menuIconLeftClicked) {
-        menu.addItem(1, "Preferences");
-        menu.addItem(2, "Edit Plugins");
-        menu.addSeparator();
-        menu.addItem(4, "Import Backup...");
-        menu.addItem(5, "Export Backup...");
+	menu.addItem(menuAudioSettings, "Audio Settings...");
+	menu.addItem(menuPlugins, "Plugins...");
 #if JUCE_WINDOWS
-		bool runOnStartup = false;
-		getRunOnStartupEnabled(runOnStartup);
-		menu.addSeparator();
-		menu.addItem(6, "Run on startup", true, runOnStartup);
+    bool runOnStartup = false;
+    getRunOnStartupEnabled(runOnStartup);
+    menu.addItem(menuRunOnStartup, "Run on startup", true, runOnStartup);
 #endif
-        menu.addSeparator();
-		menu.addSectionHeader("Active Plugins");
-        // Active plugins
-		int time = 0;
-        for (int i = 0; i < activePluginList.getNumTypes(); i++)
-        {
-            PopupMenu options;
-            options.addItem(INDEX_EDIT + i, "Edit");
-			std::vector<PluginDescription> timeSorted = getTimeSortedList();
-			String key = getKey("bypass", timeSorted[i]);
-			bool bypass = getAppProperties().getUserSettings()->getBoolValue(key);
-			options.addItem(INDEX_BYPASS + i, "Bypass", true, bypass);
-			options.addSeparator();
-			options.addItem(INDEX_MOVE_UP + i, "Move Up", i > 0);
-			options.addItem(INDEX_MOVE_DOWN + i, "Move Down", i < timeSorted.size() - 1);
-			options.addSeparator();
-            options.addItem(INDEX_DELETE + i, "Delete");
-			PluginDescription plugin = getNextPluginOlderThanTime(time);
-            menu.addSubMenu(plugin.name, options);
-        }
-        menu.addSeparator();
-		menu.addSectionHeader("Avaliable Plugins");
-        // All plugins
-        knownPluginList.addToMenu(menu, pluginSortMethod);
-    }
-    else
-    {
-        menu.addItem(1, "Quit");
-		menu.addSeparator();
-		menu.addItem(2, "Delete Plugin States");
-		#if !JUCE_MAC
-			menu.addItem(3, "Invert Icon Color");
-		#endif
-    }
+    menu.addSeparator();
+    menu.addItem(menuImportBackup, "Import Backup...");
+    menu.addItem(menuExportBackup, "Export Backup...");
+	menu.addSeparator();
+	menu.addItem(menuDeletePluginStates, "Delete Plugin States");
+#if !JUCE_MAC
+	menu.addItem(menuInvertIconColor, "Invert Icon Color");
+#endif
+	menu.addSeparator();
+	menu.addItem(menuQuit, "Quit");
 	#if JUCE_MAC || JUCE_LINUX
     menu.showMenuAsync(PopupMenu::Options().withTargetComponent(this), ModalCallbackFunction::forComponent(menuInvocationCallback, this));
 	#else
@@ -455,168 +888,212 @@ void IconMenu::timerCallback()
 
 void IconMenu::mouseDown(const MouseEvent& e)
 {
-	#if JUCE_MAC
-		Process::setDockIconVisible(true);
-	#endif
+    if (e.mods.isLeftButtonDown())
+    {
+        const uint32 now = Time::getMillisecondCounter();
+        if (lastLeftClickTime != 0
+            && now - lastLeftClickTime <= (uint32) MouseEvent::getDoubleClickTimeout())
+        {
+            lastLeftClickTime = 0;
+            #if JUCE_MAC
+            Process::setDockIconVisible(true);
+            #endif
+            Process::makeForegroundProcess();
+            reloadPlugins();
+        }
+        else
+            lastLeftClickTime = now;
+        return;
+    }
+
+    if (!e.mods.isRightButtonDown())
+        return;
+
+    lastLeftClickTime = 0;
+    #if JUCE_MAC
+    Process::setDockIconVisible(true);
+    #endif
     Process::makeForegroundProcess();
-    menuIconLeftClicked = e.mods.isLeftButtonDown();
     startTimer(50);
+}
+
+void IconMenu::mouseDoubleClick(const MouseEvent& e)
+{
+    if (e.mods.isLeftButtonDown())
+    {
+        lastLeftClickTime = 0;
+        #if JUCE_MAC
+        Process::setDockIconVisible(true);
+        #endif
+        Process::makeForegroundProcess();
+        reloadPlugins();
+    }
 }
 
 void IconMenu::menuInvocationCallback(int id, IconMenu* im)
 {
-    // Right click
-    if ((!im->menuIconLeftClicked))
+    if (id == 0)
     {
-		if (id == 1)
-		{
-			im->savePluginStates();
-			return JUCEApplication::getInstance()->quit();
-		}
-		if (id == 2)
-		{
-			im->deletePluginStates();
-			return im->loadActivePlugins();
-		}
-		if (id == 3)
-		{
-			String color = getAppProperties().getUserSettings()->getValue("icon");
-			getAppProperties().getUserSettings()->setValue("icon", color.equalsIgnoreCase("black") ? "white" : "black");
-			return im->setIcon();
-		}
-    }
-	if (im->menuIconLeftClicked && id == 4)
-	{
-		if (im->importBackup())
-			JUCEApplication::getInstance()->quit();
-		return;
-	}
-	if (im->menuIconLeftClicked && id == 5)
-		return im->exportBackup();
 #if JUCE_WINDOWS
-	if (im->menuIconLeftClicked && id == 6)
-	{
-		toggleRunOnStartup();
-		return;
-	}
+        return;
+#else
+        if (!PluginWindow::containsActiveWindows())
+            Process::setDockIconVisible(false);
+        return;
 #endif
-	#if JUCE_MAC
-    // Click elsewhere
-    if (id == 0 && !PluginWindow::containsActiveWindows())
-        Process::setDockIconVisible(false);
-	#endif
-    // Audio settings
-    if (id == 1)
-        im->showAudioSettings();
-    // Reload
-    if (id == 2)
-        im->reloadPlugins();
-    // Plugins
-    if (id > 2)
-    {
-        // Delete plugin
-        if (id >= im->INDEX_DELETE && id < im->INDEX_DELETE + 1000000)
-        {
-            im->deletePluginStates();
-
-			int index = id - im->INDEX_DELETE;
-			std::vector<PluginDescription> timeSorted = im->getTimeSortedList();
-			String key = getKey("order", timeSorted[index]);
-			int unsortedIndex = 0;
-			for (int i = 0; im->activePluginList.getNumTypes(); i++)
-			{
-				PluginDescription current = *im->activePluginList.getType(i);
-				if (key.equalsIgnoreCase(getKey("order", current)))
-				{
-					unsortedIndex = i;
-					break;
-				}
-			}
-
-			// Remove plugin order
-			getAppProperties().getUserSettings()->removeValue(key);
-			// Remove bypass entry
-			getAppProperties().getUserSettings()->removeValue(getKey("bypass", timeSorted[index]));
-			getAppProperties().saveIfNeeded();
-			
-			// Remove plugin from list
-            im->activePluginList.removeType(unsortedIndex);
-
-			// Save current states
-			im->savePluginStates();
-			im->loadActivePlugins();
-        }
-        // Add plugin
-        else if (im->knownPluginList.getIndexChosenByMenu(id) > -1)
-        {
-			PluginDescription plugin = *im->knownPluginList.getType(im->knownPluginList.getIndexChosenByMenu(id));
-			String key = getKey("order", plugin);
-			int t = time(0);
-			getAppProperties().getUserSettings()->setValue(key, t);
-			getAppProperties().saveIfNeeded();
-            im->activePluginList.addType(plugin);
-
-			im->savePluginStates();
-			im->loadActivePlugins();
-        }
-		// Bypass plugin
-		else if (id >= im->INDEX_BYPASS && id < im->INDEX_BYPASS + 1000000)
-		{
-			int index = id - im->INDEX_BYPASS;
-			std::vector<PluginDescription> timeSorted = im->getTimeSortedList();
-			String key = getKey("bypass", timeSorted[index]);
-
-			// Set bypass flag
-			bool bypassed = getAppProperties().getUserSettings()->getBoolValue(key);
-			getAppProperties().getUserSettings()->setValue(key, !bypassed);
-			getAppProperties().saveIfNeeded();
-
-			im->savePluginStates();
-			im->loadActivePlugins();
-		}
-        // Show active plugin GUI
-		else if (id >= im->INDEX_EDIT && id < im->INDEX_EDIT + 1000000)
-        {
-            if (const AudioProcessorGraph::Node::Ptr f = im->graph.getNodeForId(id - im->INDEX_EDIT + 1))
-                if (PluginWindow* const w = PluginWindow::getWindowFor(f, PluginWindow::Normal))
-                    w->toFront(true);
-        }
-		// Move plugin up the list
-		else if (id >= im->INDEX_MOVE_UP && id < im->INDEX_MOVE_UP + 1000000)
-		{
-			im->savePluginStates();
-			std::vector<PluginDescription> timeSorted = im->getTimeSortedList();
-			PluginDescription toMove = timeSorted[id - im->INDEX_MOVE_UP];
-			for (int i = 0; i < timeSorted.size(); i++)
-			{
-				bool move = getKey("move", toMove).equalsIgnoreCase(getKey("move", timeSorted[i]));
-				getAppProperties().getUserSettings()->setValue(getKey("order", timeSorted[i]), move ? i : i+1);
-				if (move)
-					getAppProperties().getUserSettings()->setValue(getKey("order", timeSorted[i-1]), i+1);
-			}
-			im->loadActivePlugins();
-		}
-		// Move plugin down the list
-		else if (id >= im->INDEX_MOVE_DOWN && id < im->INDEX_MOVE_DOWN + 1000000)
-		{
-			im->savePluginStates();
-			std::vector<PluginDescription> timeSorted = im->getTimeSortedList();
-			PluginDescription toMove = timeSorted[id - im->INDEX_MOVE_DOWN];
-			for (int i = 0; i < timeSorted.size(); i++)
-			{
-				bool move = getKey("move", toMove).equalsIgnoreCase(getKey("move", timeSorted[i]));
-				getAppProperties().getUserSettings()->setValue(getKey("order", timeSorted[i]), move ? i+2 : i+1);
-				if (move)
-				{
-					getAppProperties().getUserSettings()->setValue(getKey("order", timeSorted[i + 1]), i + 1);
-					i++;
-				}
-			}
-			im->loadActivePlugins();
-		}
-        // Update menu
-        im->startTimer(50);
     }
+
+    switch (id)
+    {
+    case menuAudioSettings:
+        im->showAudioSettings();
+        break;
+    case menuPlugins:
+        im->reloadPlugins();
+        break;
+    case menuImportBackup:
+        if (im->importBackup())
+            JUCEApplication::getInstance()->quit();
+        break;
+    case menuExportBackup:
+        im->exportBackup();
+        break;
+#if JUCE_WINDOWS
+    case menuRunOnStartup:
+        toggleRunOnStartup();
+        break;
+#endif
+    case menuDeletePluginStates:
+        im->deletePluginStates();
+        im->loadActivePlugins();
+        break;
+#if !JUCE_MAC
+    case menuInvertIconColor:
+    {
+        String color = getAppProperties().getUserSettings()->getValue("icon");
+        getAppProperties().getUserSettings()->setValue("icon",
+            color.equalsIgnoreCase("black") ? "white" : "black");
+        im->setIcon();
+        break;
+    }
+#endif
+    case menuQuit:
+        JUCEApplication::getInstance()->quit();
+        break;
+    default:
+        break;
+    }
+}
+
+void IconMenu::addPluginToActiveList(const PluginDescription& plugin)
+{
+	savePluginStates();
+
+	int order = (int) time(0);
+	for (int i = 0; i < activePluginList.getNumTypes(); ++i)
+	{
+		const int currentOrder = getAppProperties().getUserSettings()
+			->getValue(getKey("order", *activePluginList.getType(i))).getIntValue();
+		if (currentOrder >= order)
+			order = currentOrder + 1;
+	}
+
+	getAppProperties().getUserSettings()->setValue(getKey("order", plugin), order);
+	getAppProperties().getUserSettings()->saveIfNeeded();
+	activePluginList.addType(plugin);
+	loadActivePlugins();
+	if (pluginListWindow != nullptr)
+		pluginListWindow->refreshActivePlugins();
+}
+
+void IconMenu::moveActivePlugin(int fromIndex, int toIndex)
+{
+	std::vector<PluginDescription> plugins = getTimeSortedList();
+	if (fromIndex < 0 || fromIndex >= (int) plugins.size()
+		|| toIndex < 0 || toIndex >= (int) plugins.size()
+		|| fromIndex == toIndex)
+		return;
+
+	savePluginStates();
+	const PluginDescription plugin = plugins[fromIndex];
+	plugins.erase(plugins.begin() + fromIndex);
+	plugins.insert(plugins.begin() + toIndex, plugin);
+
+	PropertiesFile* settings = getAppProperties().getUserSettings();
+	for (int i = 0; i < (int) plugins.size(); ++i)
+		settings->setValue(getKey("order", plugins[i]), i + 1);
+	settings->saveIfNeeded();
+
+	loadActivePlugins();
+	if (pluginListWindow != nullptr)
+		pluginListWindow->refreshActivePlugins();
+}
+
+void IconMenu::performPluginAction(int id)
+{
+	if (id >= INDEX_DELETE && id < INDEX_DELETE + 1000000)
+	{
+		const int index = id - INDEX_DELETE;
+		std::vector<PluginDescription> plugins = getTimeSortedList();
+		if (index < 0 || index >= (int) plugins.size())
+			return;
+
+		savePluginStates();
+		const PluginDescription plugin = plugins[index];
+		const String orderKey = getKey("order", plugin);
+		int unsortedIndex = -1;
+		for (int i = 0; i < activePluginList.getNumTypes(); ++i)
+			if (orderKey.equalsIgnoreCase(getKey("order", *activePluginList.getType(i))))
+			{
+				unsortedIndex = i;
+				break;
+			}
+
+		if (unsortedIndex < 0)
+			return;
+
+		PropertiesFile* settings = getAppProperties().getUserSettings();
+		settings->removeValue(orderKey);
+		settings->removeValue(getKey("bypass", plugin));
+		settings->removeValue(getKey("state", plugin));
+		activePluginList.removeType(unsortedIndex);
+		settings->saveIfNeeded();
+		loadActivePlugins();
+	}
+	else if (id >= INDEX_BYPASS && id < INDEX_BYPASS + 1000000)
+	{
+		const int index = id - INDEX_BYPASS;
+		std::vector<PluginDescription> plugins = getTimeSortedList();
+		if (index < 0 || index >= (int) plugins.size())
+			return;
+
+		const String key = getKey("bypass", plugins[index]);
+		PropertiesFile* settings = getAppProperties().getUserSettings();
+		settings->setValue(key, !settings->getBoolValue(key));
+		settings->saveIfNeeded();
+		savePluginStates();
+		loadActivePlugins();
+	}
+	else if (id >= INDEX_EDIT && id < INDEX_EDIT + 1000000)
+	{
+		const int nodeId = id - INDEX_EDIT + 1;
+		if (const AudioProcessorGraph::Node::Ptr node = graph.getNodeForId(nodeId))
+			if (PluginWindow* const window = PluginWindow::getWindowFor(node, PluginWindow::Normal))
+				window->toFront(true);
+	}
+	else if (id >= INDEX_MOVE_UP && id < INDEX_MOVE_UP + 1000000)
+	{
+		const int index = id - INDEX_MOVE_UP;
+		moveActivePlugin(index, index - 1);
+	}
+	else if (id >= INDEX_MOVE_DOWN && id < INDEX_MOVE_DOWN + 1000000)
+	{
+		const int index = id - INDEX_MOVE_DOWN;
+		moveActivePlugin(index, index + 1);
+	}
+
+	if (pluginListWindow != nullptr)
+		pluginListWindow->refreshActivePlugins();
 }
 
 std::vector<PluginDescription> IconMenu::getTimeSortedList()
@@ -1058,7 +1535,7 @@ void IconMenu::showAudioSettings()
 void IconMenu::reloadPlugins()
 {
 	if (pluginListWindow == nullptr)
-		pluginListWindow = new PluginListWindow(*this, formatManager);
+		pluginListWindow = new PluginListWindow(*this);
 	pluginListWindow->toFront(true);
 }
 

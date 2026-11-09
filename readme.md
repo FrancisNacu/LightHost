@@ -15,9 +15,18 @@ Existing plugin files are never overwritten. Plugin installers, license data, ex
 
 ### Windows build
 
-The **Build Windows executable** GitHub Actions workflow builds a 64-bit Windows executable on a hosted Windows runner when changes are pushed to `master`, or when started manually from the repository's **Actions** tab. Download the `LightHost-Windows-x64` artifact from a completed run. Artifacts are kept for 7 days.
+To build the 64-bit Windows executable locally:
 
-The workflow builds against JUCE 4.2.4 and Steinberg VST3 SDK 3.6.12, retaining VST3 hosting. ASIO is disabled because its separate SDK is not included. The artifact includes the executable and applicable license files.
+1. Install Git for Windows and Visual Studio 2022 with the **Desktop development with C++** workload and **C++ CMake tools** component.
+2. From the repository root, run:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1
+   ```
+
+The script downloads the pinned JUCE and Steinberg VST3 SDK revisions into `lib/` if they are not already present, builds Projucer, generates the Visual Studio project, and builds the application in Release mode. The executable is written to `Builds/Windows/Release/Light Host.exe`. To build Debug instead, add `-Configuration Debug` to the command.
+
+The build retains VST3 hosting. ASIO is enabled when the Steinberg ASIO SDK is found at `lib/ASIOSDK`, `C:\Dev\SDKs\ASIOSDK`, or the location specified by `ASIO_SDK_PATH`. You can also pass `-AsioSdkPath C:\path\to\ASIOSDK`. If the SDK is unavailable, the script builds without ASIO and prints a warning. Obtain the SDK from Steinberg and follow its license terms. Generated build output, JUCE project files, and downloaded dependencies are ignored by Git.
 
 ### Screenshot
 

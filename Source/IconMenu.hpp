@@ -17,6 +17,7 @@ public:
     IconMenu();
     ~IconMenu();
     void mouseDown(const MouseEvent&);
+	void mouseDoubleClick(const MouseEvent&);
     static void menuInvocationCallback(int id, IconMenu*);
     void changeListenerCallback(ChangeBroadcaster* changed);
 	static String getKey(String type, PluginDescription plugin);
@@ -34,6 +35,9 @@ private:
     void deletePluginStates();
     void exportBackup();
     bool importBackup();
+	void performPluginAction(int id);
+	void addPluginToActiveList(const PluginDescription& plugin);
+	void moveActivePlugin(int fromIndex, int toIndex);
 	PluginDescription getNextPluginOlderThanTime(int &time);
 	void removePluginsLackingInputOutput();
 	std::vector<PluginDescription> getTimeSortedList();
@@ -43,10 +47,9 @@ private:
     AudioPluginFormatManager formatManager;
     KnownPluginList knownPluginList;
     KnownPluginList activePluginList;
-    KnownPluginList::SortMethod pluginSortMethod;
     PopupMenu menu;
     ScopedPointer<PluginDirectoryScanner> scanner;
-    bool menuIconLeftClicked;
+	uint32 lastLeftClickTime;
     bool settingsImported;
     AudioProcessorGraph graph;
     AudioProcessorPlayer player;
@@ -56,6 +59,7 @@ private:
 	int x, y;
 	#endif
 
+	class PluginManagementComponent;
 	class PluginListWindow;
 	ScopedPointer<PluginListWindow> pluginListWindow;
 };
