@@ -10,6 +10,7 @@
 #include "IconMenu.hpp"
 #include "PluginWindow.h"
 #include "PluginChain.h"
+#include "AudioSetup.h"
 #include <algorithm>
 #include <ctime>
 #include <functional>
@@ -434,7 +435,7 @@ class LightHostAudioDeviceSelector : public AudioDeviceSelectorComponent
 {
 public:
     explicit LightHostAudioDeviceSelector (AudioDeviceManager& deviceManager)
-        : AudioDeviceSelectorComponent (deviceManager, 0, 256, 0, 256,
+        : AudioDeviceSelectorComponent (deviceManager, 0, 2, 0, 2,
                                         false, false, true, false)
     {
     }
@@ -617,6 +618,10 @@ public:
         };
         addAndMakeVisible (audioViewport);
         addAndMakeVisible (audioScrollIndicator);
+        restartAudioButton.setButtonText("Restart audio");
+        restartAudioButton.setTooltip("Restart the audio device and reload plugins, keeping their settings");
+        restartAudioButton.addListener(this);
+        addAndMakeVisible(restartAudioButton);
 
         appTitle.setText ("App", dontSendNotification);
         appTitle.setFont (Font (20.0f, Font::bold));
@@ -681,6 +686,7 @@ public:
         audioCard = area.removeFromLeft (cardWidth);
         area.removeFromLeft (gap);
         appCard = area;
+        restartAudioButton.setBounds(audioCard.getRight() - 136, audioCard.getY() + 14, 120, 28);
 
         juce::Rectangle<int> audioContents = audioCard.reduced (16);
         audioContents.removeFromTop (34);
@@ -708,6 +714,11 @@ public:
 
     void buttonClicked (Button* button) override
     {
+        if (button == &restartAudioButton)
+        {
+            owner.restartAudio();
+            return;
+        }
         if (button == &runOnStartupButton)
         {
 #if JUCE_WINDOWS
@@ -753,7 +764,7 @@ private:
     Label appTitle;
     LightHostSwitch runOnStartupButton {"Run on startup"};
     LightHostSwitch invertIconButton {"Invert icon color"};
-    TextButton importButton, exportButton, deleteButton;
+    TextButton importButton, exportButton, deleteButton, restartAudioButton;
     juce::Rectangle<int> audioCard, appCard;
 };
 
@@ -1518,7 +1529,8 @@ private:
 	LightHostMainWindowContent* content; // Owned by DocumentWindow.
 };
 
-IconMenu::IconMenu() : INDEX_EDIT(1000000), INDEX_BYPASS(2000000), INDEX_DELETE(3000000)
+IconMenu::IconMenu() : INDEX_EDIT(1000000), INDEX_BYPASS(2000000), INDEX_DELETE(3000000),
+    player(getAppProperties().getUserSettings()->getFile().withFileExtension("audio.log"))
 {
     // Initialization
 	settingsImported = false;
@@ -1529,7 +1541,11 @@ IconMenu::IconMenu() : INDEX_EDIT(1000000), INDEX_BYPASS(2000000), INDEX_DELETE(
 	#endif
     // Audio device
     ScopedPointer<XmlElement> savedAudioState (getAppProperties().getUserSettings()->getXmlValue("audioDeviceState"));
-    deviceManager.initialise(256, 256, savedAudioState, true);
+    if (savedAudioState != nullptr)
+        AudioSetup::limitSavedChannelsToStereo(*savedAudioState);
+    const String audioError = deviceManager.initialise(2, 2, savedAudioState, true);
+    if (audioError.isNotEmpty())
+        player.audioDeviceError(audioError);
     player.setProcessor(&graph);
     deviceManager.addAudioCallback(&player);
     // Plugins - all
@@ -1610,7 +1626,9 @@ void IconMenu::loadActivePlugins()
     {
         const PluginDescription& plugin = plugins[i - 1];
         String errorMessage;
-        AudioPluginInstance* instance = formatManager.createPluginInstance(plugin, graph.getSampleRate(), graph.getBlockSize(), errorMessage);
+        const double sampleRate = graph.getSampleRate() > 0.0 ? graph.getSampleRate() : 48000.0;
+        const int blockSize = graph.getBlockSize() > 0 ? graph.getBlockSize() : 512;
+        AudioPluginInstance* instance = formatManager.createPluginInstance(plugin, sampleRate, blockSize, errorMessage);
         if (instance == nullptr)
         {
             Logger::writeToLog("Could not load plugin " + plugin.name + ": " + errorMessage);
@@ -1623,13 +1641,33 @@ void IconMenu::loadActivePlugins()
         const size_t savedPluginStateSize = savedPluginBinary.getSize();
         if (savedPluginStateSize > static_cast<size_t>(INT_MAX))
             Logger::writeToLog("Plugin state is too large to restore: " + plugin.name);
-        else
+        else if (savedPluginStateSize > 0)
             instance->setStateInformation(savedPluginBinary.getData(),
                 static_cast<int>(savedPluginStateSize));
         graph.addNode(instance, i);
     }
     updatePluginConnections();
 	player.setProcessor(&graph);
+}
+
+void IconMenu::restartAudio()
+{
+    if (restartingAudio)
+        return;
+    const ScopedValueSetter<bool> restarting(restartingAudio, true);
+    deviceManager.closeAudioDevice();
+    // Stop processing before asking plugins for state, then recreate their DSP state.
+    savePluginStates();
+    loadActivePlugins();
+    deviceManager.restartLastAudioDevice();
+    AudioIODevice* device = deviceManager.getCurrentAudioDevice();
+    if (device == nullptr || !device->isOpen() || !device->isPlaying())
+    {
+        const String error = device != nullptr ? device->getLastError() : "No audio device is available.";
+        player.audioDeviceError("Audio restart failed: " + error);
+        AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Restart audio",
+            "Could not restart audio. Check the selected device in Settings.\n" + error);
+    }
 }
 
 void IconMenu::updatePluginConnections()

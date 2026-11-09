@@ -9,6 +9,8 @@
 #ifndef IconMenu_hpp
 #define IconMenu_hpp
 
+#include "AudioPlayer.h"
+
 ApplicationProperties& getAppProperties();
 
 class IconMenu : public SystemTrayIconComponent, private Timer, public ChangeListener
@@ -25,6 +27,7 @@ public:
 	AudioDeviceManager& getDeviceManager() noexcept { return deviceManager; }
 	void reloadPlugins();
 	void loadActivePlugins();
+    void restartAudio();
     void savePluginStates();
     void deletePluginStates();
     void exportBackup();
@@ -54,7 +57,8 @@ private:
 	uint32 lastLeftClickTime;
     bool settingsImported;
     AudioProcessorGraph graph;
-    AudioProcessorPlayer player;
+    AudioPlayer player;
+    bool restartingAudio = false;
 	#if JUCE_WINDOWS
 	int x, y;
 	#endif

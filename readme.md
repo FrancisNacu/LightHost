@@ -30,6 +30,16 @@ The build retains VST3 hosting. ASIO is enabled when the Steinberg ASIO SDK is f
 
 Add `-RunTests` to build and run the audio routing regression checks. These use in-memory stereo buffers without opening an audio device. They verify empty-chain passthrough, chained processing, bypass/resume, preservation of plugin instances, and missing-plugin handling. They also verify that bypassed plugins receive no processing calls. Test binaries are written to `Builds/Tests/Release/` (or `Debug/`).
 
+### Audio stability
+
+Light Host processes up to two selected input and output channels. Older settings that enabled more channels retain their first two selected channels; sample rate and buffer size are preserved. The Windows build applies the tracked JUCE ASIO patch before generating the project, so repeated driver resynchronization requests cannot keep postponing a pending reset.
+
+Use **Settings → Audio → Restart audio** to reopen the device and recreate the plugin chain while retaining plugin settings. This briefly interrupts audio and closes plugin editors. **Reset device** in the device selector only reopens the device and reprepares the existing plugins.
+
+Audio diagnostics are saved beside the settings file as `Light Host.audio.log` (on Windows, normally `%APPDATA%\Light Host\Light Host.audio.log`). They summarize stream settings, device errors, callbacks that exceed the buffer duration, and buffers containing NaN/infinite output. Invalid samples are silenced. Diagnostic writes run outside the audio callback, are batched every five seconds, and the log is trimmed to approximately 128 KiB. Diagnostics do not record microphone audio. They cannot detect every driver underrun or distortion consisting of otherwise finite samples.
+
+The regression checks also cover channel migration, invalid-output containment, processing overruns, and propagation of rate/buffer changes when a device restarts. Physical ASIO recovery and third-party plugin behavior still require testing with the actual device and plugins.
+
 ### Screenshot
 
 ![Light Host 1.2](http://i.imgur.com/UF9SWfC.jpg)

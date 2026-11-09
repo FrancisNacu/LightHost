@@ -1,0 +1,15 @@
+diff --git a/modules/juce_audio_devices/native/juce_win32_ASIO.cpp b/modules/juce_audio_devices/native/juce_win32_ASIO.cpp
+--- a/modules/juce_audio_devices/native/juce_win32_ASIO.cpp
++++ b/modules/juce_audio_devices/native/juce_win32_ASIO.cpp
+@@ -715,7 +715,10 @@
+ 
+     void resetRequest() noexcept
+     {
+-        startTimer (500);
++        // Keep the first recovery deadline when a driver sends repeated requests.
++        // Restarting the timer on every request can postpone recovery indefinitely.
++        if (! isTimerRunning())
++            startTimer (500);
+     }
+ 
+     void timerCallback() override

@@ -112,6 +112,8 @@
       <FILE id="SO1QjM" name="IconMenu.cpp" compile="1" resource="0" file="Source/IconMenu.cpp"/>
       <FILE id="pzKV1s" name="IconMenu.hpp" compile="0" resource="0" file="Source/IconMenu.hpp"/>
       <FILE id="chainHeader" name="PluginChain.h" compile="0" resource="0" file="Source/PluginChain.h"/>
+      <FILE id="audioSetupHeader" name="AudioSetup.h" compile="0" resource="0" file="Source/AudioSetup.h"/>
+      <FILE id="audioPlayerHeader" name="AudioPlayer.h" compile="0" resource="0" file="Source/AudioPlayer.h"/>
     </GROUP>
     <GROUP id="{B6DF5A1E-D458-C20A-CD4E-C679E4461593}" name="Resources">
       <FILE id="kxxp8K" name="icon.png" compile="0" resource="1" file="Resources/icon.png"/>

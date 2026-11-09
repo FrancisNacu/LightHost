@@ -87,6 +87,23 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 Ensure-Dependency -Path $jucePath -Repository 'https://github.com/juce-framework/JUCE.git' -Revision $juceRevision
 Ensure-Dependency -Path $vst3Path -Repository 'https://github.com/steinbergmedia/vst3sdk.git' -Revision $vst3Revision
 
+# Apply the ASIO recovery fix before Projucer copies JUCE modules into the app.
+$asioPatch = Join-Path $repositoryRoot 'patches\juce-asio-reset.patch'
+$asioSource = Join-Path $jucePath 'modules\juce_audio_devices\native\juce_win32_ASIO.cpp'
+if (-not ([System.IO.File]::ReadAllText($asioSource)).Contains('Keep the first recovery deadline')) {
+    Invoke-CheckedCommand -FilePath 'git' -Arguments @(
+        '-C', $jucePath, 'apply', '--check', '--ignore-space-change', $asioPatch
+    )
+    Invoke-CheckedCommand -FilePath 'git' -Arguments @(
+        '-C', $jucePath, 'apply', '--ignore-space-change', $asioPatch
+    )
+}
+else {
+    Invoke-CheckedCommand -FilePath 'git' -Arguments @(
+        '-C', $jucePath, 'apply', '--reverse', '--check', '--ignore-space-change', $asioPatch
+    )
+}
+
 $vswherePath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path $vswherePath)) {
     throw 'Visual Studio 2022 with the Desktop development with C++ workload is required.'
