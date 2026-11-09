@@ -7,9 +7,11 @@ A simple VST/AU host for OS X, Windows, and Linux that sits in the menu/task bar
 
 See [#1](https://github.com/rolandoislas/LightHost/issues/1)
 
-### Settings backup
+### Backup and restore
 
-Right-click the Light Host tray icon and choose **Export Settings...** to save the current settings to a `.settings` file. Choose **Import Settings...** to replace the current settings from a previously exported file. Light Host closes after a successful import; reopen it to apply the imported audio and plugin settings.
+Left-click the Light Host tray icon and choose **Export Backup...** to create a ZIP archive containing your Light Host settings, plugin list, active plugin states, audio device settings, and discovered file-based plugin binaries. Choose **Import Backup...** to install plugin files into the first scan location configured for each format on this computer and restore the settings. Light Host closes after a successful import; reopen it to apply the restored settings.
+
+Existing plugin files are never overwritten. Plugin installers, license data, external dependencies, and plugins managed by the operating system are not included; those may need to be installed or authorized separately. Backups can be large, and plugin binaries may be subject to their authors' license terms.
 
 ### Windows build
 

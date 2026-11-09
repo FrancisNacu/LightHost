@@ -32,13 +32,13 @@ private:
     void loadActivePlugins();
     void savePluginStates();
     void deletePluginStates();
-    void exportSettings();
-    bool importSettings();
+    void exportBackup();
+    bool importBackup();
 	PluginDescription getNextPluginOlderThanTime(int &time);
 	void removePluginsLackingInputOutput();
 	std::vector<PluginDescription> getTimeSortedList();
 	void setIcon();
-    
+
     AudioDeviceManager deviceManager;
     AudioPluginFormatManager formatManager;
     KnownPluginList knownPluginList;
