@@ -334,6 +334,44 @@ void checkBackupRoundTrip(const File& root, const String& name, bool bundle, boo
 
 void checkBackups()
 {
+    const File oldApp = File::getSpecialLocation(File::tempDirectory).getChildFile("old-app");
+    const File newApp = oldApp.getSiblingFile("new-app");
+    PluginDescription portable;
+    portable.name = "Portable";
+    portable.pluginFormatName = "VST3";
+    portable.uid = 42;
+    portable.fileOrIdentifier = oldApp.getChildFile("VST Plugins/import/Portable.vst3").getFullPathName();
+    KnownPluginList portableList;
+    portableList.addType(portable);
+    ScopedPointer<XmlElement> portableXml(portableList.createXml());
+    PropertySet portableSettings;
+    portableSettings.setValue("pluginList", portableXml);
+    portableSettings.setValue("pluginListActive", portableXml);
+    portableSettings.setValue("portableAppDirectory", oldApp.getFullPathName());
+    portableSettings.setValue("lastPluginScanPath_VST3", oldApp.getChildFile("VST Plugins/import").getFullPathName());
+    for (const char* type : { "state", "order", "bypass", "display-name" })
+        portableSettings.setValue(PluginState::key(type, portable), "preserved");
+    PluginState::relocatePortableSettings(portableSettings, newApp);
+    PluginDescription relocated(portable);
+    relocated.fileOrIdentifier = newApp.getChildFile("VST Plugins/import/Portable.vst3").getFullPathName();
+    for (const char* type : { "state", "order", "bypass", "display-name" })
+        require(portableSettings.getValue(PluginState::key(type, relocated)) == "preserved"
+                && !portableSettings.containsKey(PluginState::key(type, portable)),
+                "Moving app directory lost plugin settings");
+    for (const char* listKey : { "pluginList", "pluginListActive" })
+    {
+        ScopedPointer<XmlElement> xml(XmlDocument::parse(portableSettings.getValue(listKey)));
+        KnownPluginList movedList;
+        movedList.recreateFromXml(*xml);
+        require(movedList.getNumTypes() == 1
+                && movedList.getType(0)->fileOrIdentifier == relocated.fileOrIdentifier,
+                "Moving app directory did not relocate a plugin list");
+    }
+    require(portableSettings.getValue("lastPluginScanPath_VST3")
+            == newApp.getChildFile("VST Plugins/import").getFullPathName(), "Scan path did not follow executable");
+    PluginState::relocatePortableSettings(portableSettings, newApp);
+    require(portableSettings.getValue(PluginState::key("state", relocated)) == "preserved",
+            "Repeated portable startup lost state");
     PropertySet settings;
     require(PluginBackup::hasValidPluginLists(settings), "Empty installation rejected");
     settings.setValue("pluginListActive", "broken XML");

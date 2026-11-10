@@ -88,6 +88,48 @@ inline void capture(AudioProcessorGraph& graph, AudioProcessor& processor, Memor
     const ScopedLock callbackGuard(processor.getCallbackLock());
     processor.getStateInformation(state);
 }
+
+inline void relocatePortableSettings(PropertySet& settings, const File& directory)
+{
+    const String previous = settings.getValue("portableAppDirectory");
+    if (previous.isNotEmpty() && File::isAbsolutePath(previous) && File(previous) != directory)
+    {
+        const File oldDirectory(previous);
+        for (const char* listKey : { "pluginList", "pluginListActive" })
+        {
+            ScopedPointer<XmlElement> list(XmlDocument::parse(settings.getValue(listKey)));
+            if (list == nullptr)
+                continue;
+            forEachXmlChildElementWithTagName(*list, entry, "PLUGIN")
+            {
+                PluginDescription before;
+                if (!before.loadFromXml(*entry) || !File::isAbsolutePath(before.fileOrIdentifier))
+                    continue;
+                const File oldPlugin(before.fileOrIdentifier);
+                if (!oldPlugin.isAChildOf(oldDirectory))
+                    continue;
+                PluginDescription after(before);
+                after.fileOrIdentifier = directory.getChildFile(oldPlugin.getRelativePathFrom(oldDirectory)).getFullPathName();
+                remapSettings(settings, before, after);
+                entry->setAttribute("file", after.fileOrIdentifier);
+            }
+            settings.setValue(listKey, list->createDocument(String(), true));
+        }
+        const StringArray keys(settings.getAllProperties().getAllKeys());
+        for (const auto& property : keys)
+            if (property.startsWith("lastPluginScanPath_"))
+            {
+                FileSearchPath paths(settings.getValue(property));
+                FileSearchPath relocated;
+                for (int i = 0; i < paths.getNumPaths(); ++i)
+                    relocated.add(paths[i] == oldDirectory ? directory
+                        : paths[i].isAChildOf(oldDirectory)
+                            ? directory.getChildFile(paths[i].getRelativePathFrom(oldDirectory)) : paths[i]);
+                settings.setValue(property, relocated.toString());
+            }
+    }
+    settings.setValue("portableAppDirectory", directory.getFullPathName());
+}
 }
 
 #endif

@@ -131,6 +131,35 @@ public:
 
         checkArguments(&options);
 
+        const File appDirectory = File::getSpecialLocation(File::currentExecutableFile).getParentDirectory();
+        options.folderName = appDirectory.getFullPathName();
+        const File oldPortableSettings = options.getDefaultFile();
+        const File dataDirectory = appDirectory.getChildFile("Data");
+        options.folderName = dataDirectory.getFullPathName();
+        const File portableSettings = options.getDefaultFile();
+        if (!dataDirectory.createDirectory().wasOk())
+        {
+            AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Settings",
+                "Could not create the Data folder. Check that the application folder is writable.");
+            quit();
+            return;
+        }
+        if (!portableSettings.exists() && oldPortableSettings.existsAsFile())
+        {
+            const bool migrated = oldPortableSettings.moveFileTo(portableSettings);
+            if (!migrated)
+            {
+                AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Settings",
+                    "Could not migrate settings into the Data folder. Your existing settings were preserved.");
+                quit();
+                return;
+            }
+        }
+        const File oldLog = oldPortableSettings.withFileExtension("audio.log");
+        const File newLog = portableSettings.withFileExtension("audio.log");
+        if (oldLog.existsAsFile() && !newLog.exists())
+            oldLog.moveFileTo(newLog);
+
         appProperties = new ApplicationProperties();
         appProperties->setStorageParameters (options);
 

@@ -9,6 +9,8 @@ See [#1](https://github.com/rolandoislas/LightHost/issues/1)
 
 ### Backup and restore
 
+Configuration and audio logs are stored in the `Data` folder beside the executable, regardless of the working directory or shortcut used to launch it. Existing settings and logs beside the executable move there automatically. AppData and previous executable locations are never searched for settings. Backup dialogs also default to the executable's directory. To preserve your setup when moving the app, move the executable, `Data`, and `VST Plugins` together into a writable directory. Moving only the executable uses the destination folder's configuration, or creates fresh settings there if none exist. Plugin paths inside the app folder and their saved states follow the new location automatically; externally installed plugins retain their existing paths.
+
 Open Settings from the Light Host tray window and choose **Export backup...** to create a `.lightbak` file containing your Light Host settings, plugin list, active plugin states, audio device settings, and discovered file-based plugin binaries. Choose **Import backup...** to restore the settings and missing plugin files into the `VST Plugins` folder beside the executable. Light Host automatically reloads after a successful import to apply the restored settings. Import accepts only `.lightbak` files, which use ZIP compression internally.
 
 Existing plugin files are never overwritten. Plugin installers, license data, external dependencies, and plugins managed by the operating system are not included; those may need to be installed or authorized separately. Backups can be large, and plugin binaries may be subject to their authors' license terms.
@@ -38,7 +40,7 @@ Light Host processes up to two selected input and output channels. Older setting
 
 Use **Settings → Audio → Restart audio** to reopen the device and recreate the plugin chain while retaining plugin settings. This briefly interrupts audio and closes plugin editors. **Reset device** in the device selector only reopens the device and reprepares the existing plugins.
 
-Audio diagnostics are saved beside the settings file as `Light Host.audio.log` (on Windows, normally `%APPDATA%\Light Host\Light Host.audio.log`). They summarize stream settings, device errors, callbacks that exceed the buffer duration, and buffers containing NaN/infinite output. Invalid samples are silenced. Diagnostic writes run outside the audio callback, are batched every five seconds, and the log is trimmed to approximately 128 KiB. Diagnostics do not record microphone audio. They cannot detect every driver underrun or distortion consisting of otherwise finite samples.
+Audio diagnostics are saved as `Data/Light Host.audio.log` beside the executable. They summarize stream settings, device errors, callbacks that exceed the buffer duration, and buffers containing NaN/infinite output. Invalid samples are silenced. Diagnostic writes run outside the audio callback, are batched every five seconds, and the log is trimmed to approximately 128 KiB. Diagnostics do not record microphone audio. They cannot detect every driver underrun or distortion consisting of otherwise finite samples.
 
 The regression checks also cover channel migration, invalid-output containment, processing overruns, and propagation of rate/buffer changes when a device restarts. Physical ASIO recovery and third-party plugin behavior still require testing with the actual device and plugins.
 

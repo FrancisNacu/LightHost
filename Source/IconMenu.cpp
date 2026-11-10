@@ -577,10 +577,6 @@ public:
                                  Colour (0x00FFFFFF), 0.0f, 22.0f, false);
             g.setGradientFill (fade);
             g.fillRect (getLocalBounds().removeFromTop (22));
-            g.setColour (Colour (0xff6B6880));
-            g.setFont (Font (11.0f));
-            g.drawText ("Scroll up", 8, 1, getWidth() - 24, 16,
-                        Justification::centredRight, true);
         }
 
         if (canScrollDown)
@@ -1545,6 +1541,8 @@ IconMenu::IconMenu() : INDEX_EDIT(1000000), INDEX_BYPASS(2000000), INDEX_DELETE(
 {
     // Initialization
 	settingsImported = false;
+	PluginState::relocatePortableSettings(*getAppProperties().getUserSettings(),
+		File::getSpecialLocation(File::currentExecutableFile).getParentDirectory());
 	lastLeftClickTime = 0;
     formatManager.addDefaultFormats();
 	#if JUCE_WINDOWS
@@ -2041,7 +2039,8 @@ void IconMenu::exportBackup()
 	}
 
 	FileChooser chooser("Export Light Host backup",
-		File::getSpecialLocation(File::userHomeDirectory).getChildFile("Light Host Backup.lightbak"),
+		File::getSpecialLocation(File::currentExecutableFile).getParentDirectory()
+			.getChildFile("Light Host Backup.lightbak"),
 		"*.lightbak");
 	if (!chooser.browseForFileToSave(true))
 		return;
@@ -2163,7 +2162,7 @@ void IconMenu::exportBackup()
 bool IconMenu::importBackup()
 {
 	FileChooser chooser("Import Light Host backup",
-		File::getSpecialLocation(File::userHomeDirectory), "*.lightbak");
+		File::getSpecialLocation(File::currentExecutableFile).getParentDirectory(), "*.lightbak");
 	if (!chooser.browseForFileToOpen())
 		return false;
 	if (!chooser.getResult().hasFileExtension(".lightbak"))
