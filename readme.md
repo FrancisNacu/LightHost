@@ -9,11 +9,13 @@ See [#1](https://github.com/rolandoislas/LightHost/issues/1)
 
 ### Backup and restore
 
-Left-click the Light Host tray icon and choose **Export Backup...** to create a ZIP archive containing your Light Host settings, plugin list, active plugin states, audio device settings, and discovered file-based plugin binaries. Choose **Import Backup...** to install plugin files into the first scan location configured for each format on this computer and restore the settings. Light Host closes after a successful import; reopen it to apply the restored settings.
+Open Settings from the Light Host tray window and choose **Export backup...** to create a `.lightbak` file containing your Light Host settings, plugin list, active plugin states, audio device settings, and discovered file-based plugin binaries. Choose **Import backup...** to restore the settings and missing plugin files into the `VST Plugins` folder beside the executable. Light Host automatically reloads after a successful import to apply the restored settings. Import accepts only `.lightbak` files, which use ZIP compression internally.
 
 Existing plugin files are never overwritten. Plugin installers, license data, external dependencies, and plugins managed by the operating system are not included; those may need to be installed or authorized separately. Backups can be large, and plugin binaries may be subject to their authors' license terms.
 
 ### Windows build
+
+When **Run on startup** is enabled, launching Light Host refreshes its Windows startup entry to the current executable location. After moving or renaming the executable, launch it once from the new location before signing out. Turning startup off removes the entry; subsequent launches leave it off. If you keep multiple copies, the last copy launched becomes the startup target.
 
 To build the 64-bit Windows executable locally:
 
@@ -39,6 +41,10 @@ Use **Settings → Audio → Restart audio** to reopen the device and recreate t
 Audio diagnostics are saved beside the settings file as `Light Host.audio.log` (on Windows, normally `%APPDATA%\Light Host\Light Host.audio.log`). They summarize stream settings, device errors, callbacks that exceed the buffer duration, and buffers containing NaN/infinite output. Invalid samples are silenced. Diagnostic writes run outside the audio callback, are batched every five seconds, and the log is trimmed to approximately 128 KiB. Diagnostics do not record microphone audio. They cannot detect every driver underrun or distortion consisting of otherwise finite samples.
 
 The regression checks also cover channel migration, invalid-output containment, processing overruns, and propagation of rate/buffer changes when a device restarts. Physical ASIO recovery and third-party plugin behavior still require testing with the actual device and plugins.
+
+Plugin state, order, bypass, and display names use the plugin format, ID, and full location as their identity; existing settings are migrated automatically. Version 2 backups include both available and active plugins, preserve single-file versus bundle layouts, and remap identity-based settings when restoring to another location. Original version 1 backups without a layout flag remain supported. Older app versions cannot restore version 2 backups.
+
+Only effects with at least two input and two output channels are supported in the stereo chain. Other layouts are skipped with a warning, and the remaining chain continues passing audio. Plugin state snapshots synchronize with processing in graph-then-processor lock order; a plugin with a slow state callback can briefly interrupt audio during saving.
 
 ### Screenshot
 

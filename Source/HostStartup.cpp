@@ -154,6 +154,15 @@ public:
         JUCEApplicationBase::quit();
     }
 
+    void restartAfterImport()
+    {
+        // Recreate the host only after the import button callback has returned.
+        // The old host suppresses state writes after a successful import.
+        mainWindow = nullptr;
+        appProperties = nullptr;
+        initialise(String());
+    }
+
     const String getApplicationName() override       { return "Light Host"; }
     const String getApplicationVersion() override    { return ProjectInfo::versionString; }
     bool moreThanOneInstanceAllowed() override       {
@@ -194,5 +203,9 @@ private:
 
 static PluginHostApp& getApp()                      { return *dynamic_cast<PluginHostApp*>(JUCEApplication::getInstance()); }
 ApplicationProperties& getAppProperties()           { return *getApp().appProperties; }
+void restartAfterSettingsImport()
+{
+    MessageManager::callAsync([] { getApp().restartAfterImport(); });
+}
 
 START_JUCE_APPLICATION (PluginHostApp)

@@ -12,6 +12,7 @@
 #include "AudioPlayer.h"
 
 ApplicationProperties& getAppProperties();
+void restartAfterSettingsImport();
 
 class IconMenu : public SystemTrayIconComponent, private Timer, public ChangeListener
 {

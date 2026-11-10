@@ -459,6 +459,9 @@ try {
         $testSource = $testProject.CreateElement('ClCompile', $testProject.DocumentElement.NamespaceURI)
         $testSource.SetAttribute('Include', (Join-Path $repositoryRoot 'Tests\PluginChainTests.cpp'))
         $sourceGroup.AppendChild($testSource) | Out-Null
+        $windowSource = $testProject.CreateElement('ClCompile', $testProject.DocumentElement.NamespaceURI)
+        $windowSource.SetAttribute('Include', (Join-Path $repositoryRoot 'Source\PluginWindow.cpp'))
+        $sourceGroup.AppendChild($windowSource) | Out-Null
         foreach ($link in $testProject.SelectNodes('//msbuild:ItemDefinitionGroup/msbuild:Link', $testNamespaces)) {
             $link.SelectSingleNode('msbuild:SubSystem', $testNamespaces).InnerText = 'Console'
             $link.SelectSingleNode('msbuild:OutputFile', $testNamespaces).InnerText = '$(OutDir)\PluginChainTests.exe'

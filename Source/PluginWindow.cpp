@@ -19,8 +19,6 @@ PluginWindow::PluginWindow (Component* const pluginEditor,
                         owner->properties.getWithDefault (getLastYProp (type), Random::getSystemRandom().nextInt (500)));
 
 
-    setVisible (true);
-
     activePluginWindows.add (this);
 
 }
@@ -49,8 +47,7 @@ PluginWindow* PluginWindow::getWindowFor (AudioProcessorGraph::Node* const node,
     jassert (node != nullptr);
 
     for (int i = activePluginWindows.size(); --i >= 0;)
-        if (activePluginWindows.getUnchecked(i)->owner == node
-             && activePluginWindows.getUnchecked(i)->type == type)
+        if (activePluginWindows.getUnchecked(i)->owner == node)
             return activePluginWindows.getUnchecked(i);
 
     AudioProcessor* processor = node->getProcessor();

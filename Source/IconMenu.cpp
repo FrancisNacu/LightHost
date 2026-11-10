@@ -11,6 +11,8 @@
 #include "PluginWindow.h"
 #include "PluginChain.h"
 #include "AudioSetup.h"
+#include "PluginState.h"
+#include "PluginBackup.h"
 #include <algorithm>
 #include <ctime>
 #include <functional>
@@ -37,44 +39,6 @@ enum ActivePluginHoveredAction
 };
 
 const char* const activePluginDragPrefix = "active-plugin:";
-
-bool addPluginFilesToArchive(ZipFile::Builder& archive, const File& pluginFile,
-	const String& archiveRoot)
-{
-	Array<File> files;
-	if (pluginFile.isDirectory())
-		pluginFile.findChildFiles(files, File::findFiles, true);
-	else if (pluginFile.existsAsFile())
-		files.add(pluginFile);
-
-	if (files.isEmpty())
-		return false;
-
-	for (int i = 0; i < files.size(); ++i)
-	{
-		const String relativePath = pluginFile.isDirectory()
-			? files[i].getRelativePathFrom(pluginFile).replaceCharacter('\\', '/')
-			: files[i].getFileName();
-		archive.addFile(files[i], 6, archiveRoot + "/" + relativePath);
-	}
-
-	return true;
-}
-
-bool isSafePluginArchivePath(const String& path)
-{
-	if (path.isEmpty() || path.startsWithChar('/') || path.containsChar('\\')
-		|| path.containsChar(':'))
-		return false;
-
-	StringArray components;
-	components.addTokens(path, "/", "");
-	for (int i = 0; i < components.size(); ++i)
-		if (components[i].isEmpty() || components[i] == "." || components[i] == "..")
-			return false;
-
-	return true;
-}
 
 class PluginActionMenuLookAndFeel : public LookAndFeel_V3
 {
@@ -298,6 +262,13 @@ void remapPluginPaths(PropertySet& settings, const String& key,
 		for (int i = 0; i < oldPaths.size(); ++i)
 			if (oldPath.equalsIgnoreCase(oldPaths[i]))
 			{
+                PluginDescription before;
+                if (before.loadFromXml(*plugin))
+                {
+                    PluginDescription after(before);
+                    after.fileOrIdentifier = newPaths[i];
+                    PluginState::remapSettings(settings, before, after);
+                }
 				plugin->setAttribute("file", newPaths[i]);
 				break;
 			}
@@ -310,6 +281,12 @@ void remapPluginPaths(PropertySet& settings, const String& key,
 const wchar_t* const startupRegistryPath = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const wchar_t* const startupRegistryValue = L"Light Host";
 
+String getStartupCommandLine()
+{
+	return File::getSpecialLocation(File::currentExecutableFile)
+		.getFullPathName().quoted();
+}
+
 void showStartupRegistryError(LSTATUS error)
 {
 	AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Run on startup",
@@ -317,9 +294,11 @@ void showStartupRegistryError(LSTATUS error)
 		+ String((int) error));
 }
 
-bool getRunOnStartupEnabled(bool& enabled)
+bool getRunOnStartupEnabled(bool& enabled, bool* registered = nullptr)
 {
 	enabled = false;
+	if (registered != nullptr)
+		*registered = false;
 	HKEY key = nullptr;
 	LSTATUS result = RegOpenKeyExW(HKEY_CURRENT_USER, startupRegistryPath, 0,
 		KEY_QUERY_VALUE, &key);
@@ -332,10 +311,17 @@ bool getRunOnStartupEnabled(bool& enabled)
 	}
 
 	DWORD type = 0;
-	DWORD size = 0;
-	result = RegQueryValueExW(key, startupRegistryValue, nullptr, &type, nullptr, &size);
+	// Run commands are limited to 260 characters, including the quoted path.
+	wchar_t commandLine[261] = {};
+	DWORD size = sizeof(commandLine);
+	result = RegQueryValueExW(key, startupRegistryValue, nullptr, &type,
+		reinterpret_cast<BYTE*>(commandLine), &size);
 	RegCloseKey(key);
 	if (result == ERROR_FILE_NOT_FOUND)
+		return true;
+	if (registered != nullptr && (result == ERROR_SUCCESS || result == ERROR_MORE_DATA))
+		*registered = true;
+	if (result == ERROR_MORE_DATA)
 		return true;
 	if (result != ERROR_SUCCESS)
 	{
@@ -343,16 +329,17 @@ bool getRunOnStartupEnabled(bool& enabled)
 		return false;
 	}
 
-	enabled = true;
+	// Check the command as well as its presence so a moved executable can
+	// refresh an existing registration when it launches.
+	enabled = type == REG_SZ && size >= sizeof(wchar_t)
+		&& size % sizeof(wchar_t) == 0
+		&& commandLine[size / sizeof(wchar_t) - 1] == 0
+		&& String(commandLine).equalsIgnoreCase(getStartupCommandLine());
 	return true;
 }
 
-void toggleRunOnStartup()
+void setRunOnStartupEnabled(bool enabled)
 {
-	bool enabled = false;
-	if (!getRunOnStartupEnabled(enabled))
-		return;
-
 	HKEY key = nullptr;
 	DWORD disposition = 0;
 	LSTATUS result = RegCreateKeyExW(HKEY_CURRENT_USER, startupRegistryPath, 0, nullptr,
@@ -363,7 +350,7 @@ void toggleRunOnStartup()
 		return;
 	}
 
-	if (enabled)
+	if (!enabled)
 		result = RegDeleteValueW(key, startupRegistryValue);
 	else
 	{
@@ -380,14 +367,38 @@ void toggleRunOnStartup()
 		std::wstring commandLine(executablePath.toWideCharPointer());
 		commandLine.insert(commandLine.begin(), L'"');
 		commandLine.push_back(L'"');
+		if (commandLine.length() > 260)
+		{
+			RegCloseKey(key);
+			AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Run on startup",
+				"The executable path is too long for Windows startup. Move Light Host "
+				"to a folder with a shorter path and enable this setting again.");
+			return;
+		}
 		result = RegSetValueExW(key, startupRegistryValue, 0, REG_SZ,
 			reinterpret_cast<const BYTE*>(commandLine.c_str()),
 			static_cast<DWORD>((commandLine.length() + 1) * sizeof(wchar_t)));
 	}
 
 	RegCloseKey(key);
-	if (result != ERROR_SUCCESS && !(enabled && result == ERROR_FILE_NOT_FOUND))
+	if (result != ERROR_SUCCESS && !(!enabled && result == ERROR_FILE_NOT_FOUND))
 		showStartupRegistryError(result);
+}
+
+void toggleRunOnStartup()
+{
+	bool enabled = false;
+	if (getRunOnStartupEnabled(enabled))
+		setRunOnStartupEnabled(!enabled);
+}
+
+void refreshStartupRegistration()
+{
+	bool enabled = false;
+	bool registered = false;
+	// Absence means the user turned startup off. Only repair existing entries.
+	if (getRunOnStartupEnabled(enabled, &registered) && registered && !enabled)
+		setRunOnStartupEnabled(true);
 }
 #endif
 }
@@ -739,7 +750,7 @@ public:
         if (button == &importButton)
         {
             if (owner.importBackup())
-                JUCEApplication::getInstance()->quit();
+                restartAfterSettingsImport();
             return;
         }
 
@@ -1290,7 +1301,7 @@ private:
 
 	String getDisplayNameKey (const PluginDescription& plugin) const
 	{
-		return "plugin-display-name-" + plugin.createIdentifierString();
+		return PluginState::key("display-name", plugin);
 	}
 
 	String getDisplayNameForPlugin (const PluginDescription& plugin) const
@@ -1537,6 +1548,7 @@ IconMenu::IconMenu() : INDEX_EDIT(1000000), INDEX_BYPASS(2000000), INDEX_DELETE(
 	lastLeftClickTime = 0;
     formatManager.addDefaultFormats();
 	#if JUCE_WINDOWS
+	refreshStartupRegistration();
 	x = y = 0;
 	#endif
     // Audio device
@@ -1557,6 +1569,8 @@ IconMenu::IconMenu() : INDEX_EDIT(1000000), INDEX_BYPASS(2000000), INDEX_DELETE(
     ScopedPointer<XmlElement> savedPluginListActive(getAppProperties().getUserSettings()->getXmlValue("pluginListActive"));
     if (savedPluginListActive != nullptr)
         activePluginList.recreateFromXml(*savedPluginListActive);
+    PluginState::migrateLegacySettings(*getAppProperties().getUserSettings(),
+        PluginState::collectPlugins(knownPluginList, activePluginList));
     loadActivePlugins();
     activePluginList.addChangeListener(this);
 	setIcon();
@@ -1621,6 +1635,7 @@ void IconMenu::loadActivePlugins()
     graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioInputNode), PluginChain::inputNodeId);
     graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioOutputNode), PluginChain::outputNodeId);
 	const std::vector<PluginDescription> plugins = getOrderedActivePlugins();
+	StringArray loadingErrors;
 	// NOTE: Node ids cannot begin at 0.
     for (int i = 1; i <= (int) plugins.size(); i++)
     {
@@ -1632,6 +1647,7 @@ void IconMenu::loadActivePlugins()
         if (instance == nullptr)
         {
             Logger::writeToLog("Could not load plugin " + plugin.name + ": " + errorMessage);
+            loadingErrors.add(plugin.name + ": " + errorMessage);
             continue;
         }
 		String pluginUid = getKey("state", plugin);
@@ -1644,10 +1660,22 @@ void IconMenu::loadActivePlugins()
         else if (savedPluginStateSize > 0)
             instance->setStateInformation(savedPluginBinary.getData(),
                 static_cast<int>(savedPluginStateSize));
+        if (!PluginChain::supportsStereo(*instance))
+        {
+            loadingErrors.add(plugin.name + ": only plugins with stereo input and output are supported.");
+            delete instance;
+            continue;
+        }
         graph.addNode(instance, i);
     }
     updatePluginConnections();
 	player.setProcessor(&graph);
+    if (!loadingErrors.isEmpty())
+    {
+        player.audioDeviceError(loadingErrors.joinIntoString("\n"));
+        AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Plugins skipped",
+            loadingErrors.joinIntoString("\n") + "\nAudio continues through the remaining plugins.");
+    }
 }
 
 void IconMenu::restartAudio()
@@ -1674,8 +1702,13 @@ void IconMenu::updatePluginConnections()
 {
     const std::vector<PluginDescription> plugins = getOrderedActivePlugins();
     PropertiesFile* settings = getAppProperties().getUserSettings();
-    PluginChain::reconnect(graph, (int) plugins.size(),
+    const StringArray issues = PluginChain::reconnect(graph, (int) plugins.size(),
         [&](int index) { return settings->getBoolValue(getKey("bypass", plugins[index])); });
+    if (!issues.isEmpty())
+    {
+        player.audioDeviceError(issues.joinIntoString("\n"));
+        AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Audio routing", issues.joinIntoString("\n"));
+    }
 }
 
 void IconMenu::changeListenerCallback(ChangeBroadcaster* changed)
@@ -1801,13 +1834,11 @@ void IconMenu::menuInvocationCallback(int id, IconMenu* im)
 {
     if (id == 0)
     {
-#if JUCE_WINDOWS
-        return;
-#else
+#if JUCE_MAC
         if (!PluginWindow::containsActiveWindows())
             Process::setDockIconVisible(false);
-        return;
 #endif
+        return;
     }
 
     switch (id)
@@ -1831,6 +1862,9 @@ void IconMenu::menuInvocationCallback(int id, IconMenu* im)
 void IconMenu::addPluginToActiveList(const PluginDescription& plugin)
 {
 	savePluginStates();
+    // Also migrate settings for plugins rediscovered since startup.
+    PluginState::migrateLegacySettings(*getAppProperties().getUserSettings(),
+        PluginState::collectPlugins(knownPluginList, activePluginList));
 
 	int order = (int) time(0);
 	for (int i = 0; i < activePluginList.getNumTypes(); ++i)
@@ -1886,7 +1920,7 @@ void IconMenu::performPluginAction(int id)
 		const String orderKey = getKey("order", plugin);
 		int unsortedIndex = -1;
 		for (int i = 0; i < activePluginList.getNumTypes(); ++i)
-			if (orderKey.equalsIgnoreCase(getKey("order", *activePluginList.getType(i))))
+			if (plugin.isDuplicateOf(*activePluginList.getType(i)))
 			{
 				unsortedIndex = i;
 				break;
@@ -1921,7 +1955,10 @@ void IconMenu::performPluginAction(int id)
 		const int nodeId = id - INDEX_EDIT + 1;
 		if (const AudioProcessorGraph::Node::Ptr node = graph.getNodeForId(nodeId))
 			if (PluginWindow* const window = PluginWindow::getWindowFor(node, PluginWindow::Normal))
+			{
+                window->setVisible(true);
 				window->toFront(true);
+			}
 	}
 
 	if (pluginListWindow != nullptr)
@@ -1955,8 +1992,7 @@ std::vector<PluginDescription> IconMenu::getOrderedActivePlugins()
 
 String IconMenu::getKey(const String& type, const PluginDescription& plugin)
 {
-	String key = "plugin-" + type.toLowerCase() + "-" + plugin.name + plugin.version + plugin.pluginFormatName;
-	return key;
+    return PluginState::key(type, plugin);
 }
 
 void IconMenu::deletePluginStates()
@@ -1984,7 +2020,7 @@ void IconMenu::savePluginStates()
         AudioProcessor& processor = *node->getProcessor();
 		String pluginUid = getKey("state", list[i]);
         MemoryBlock savedStateBinary;
-        processor.getStateInformation(savedStateBinary);
+        PluginState::capture(graph, processor, savedStateBinary);
         getAppProperties().getUserSettings()->setValue(pluginUid, savedStateBinary.toBase64Encoding());
     }
     getAppProperties().saveIfNeeded();
@@ -2005,12 +2041,17 @@ void IconMenu::exportBackup()
 	}
 
 	FileChooser chooser("Export Light Host backup",
-		File::getSpecialLocation(File::userHomeDirectory).getChildFile("Light Host Backup.zip"),
-		"*.zip");
+		File::getSpecialLocation(File::userHomeDirectory).getChildFile("Light Host Backup.lightbak"),
+		"*.lightbak");
 	if (!chooser.browseForFileToSave(true))
 		return;
 
-	const File destination = chooser.getResult();
+	const File destination = chooser.getResult().withFileExtension(".lightbak");
+	if (destination != chooser.getResult() && destination.exists()
+		&& !AlertWindow::showOkCancelBox(AlertWindow::WarningIcon, "Export Backup",
+			"The backup file already exists. Replace it?\n" + destination.getFullPathName(),
+			"Replace", "Cancel"))
+		return;
 	if (destination == settings->getFile())
 	{
 		AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Export Backup",
@@ -2020,14 +2061,16 @@ void IconMenu::exportBackup()
 
 	ZipFile::Builder archive;
 	XmlElement manifest("LIGHTHOST_BACKUP");
-	manifest.setAttribute("version", 1);
+	manifest.setAttribute("version", 2);
 	StringArray archivedPluginPaths;
 	StringArray errors;
 	int archivedPlugins = 0;
 
-	for (int i = 0; i < knownPluginList.getNumTypes(); ++i)
+    const std::vector<PluginDescription> backupPlugins =
+        PluginState::collectPlugins(knownPluginList, activePluginList);
+	for (int i = 0; i < (int) backupPlugins.size(); ++i)
 	{
-		const PluginDescription* plugin = knownPluginList.getType(i);
+		const PluginDescription* plugin = &backupPlugins[i];
 		const File pluginFile(File::createFileWithoutCheckingPath(plugin->fileOrIdentifier));
 
 		AudioPluginFormat* format = nullptr;
@@ -2056,7 +2099,7 @@ void IconMenu::exportBackup()
 			continue;
 
 		const String archiveRoot = "plugins/" + String(archivedPlugins);
-		if (!addPluginFilesToArchive(archive, pluginFile, archiveRoot))
+		if (!PluginBackup::addFiles(archive, pluginFile, archiveRoot))
 		{
 			AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Export Backup",
 				"Could not read the plugin file " + pluginFile.getFullPathName() + ".");
@@ -2068,6 +2111,7 @@ void IconMenu::exportBackup()
 		pluginEntry->setAttribute("format", format->getName());
 		pluginEntry->setAttribute("source", pluginFile.getFullPathName());
 		pluginEntry->setAttribute("archiveRoot", archiveRoot);
+        pluginEntry->setAttribute("isDirectory", pluginFile.isDirectory());
 		archivedPluginPaths.add(pluginFile.getFullPathName());
 		++archivedPlugins;
 	}
@@ -2090,13 +2134,8 @@ void IconMenu::exportBackup()
 	archive.addEntry(new MemoryInputStream(manifestData, true), 6, "manifest.xml",
 		Time::getCurrentTime());
 
-	const File temporaryFile = destination.getSiblingFile(destination.getFileName() + ".tmp");
-	if (temporaryFile.exists() && !temporaryFile.deleteFile())
-	{
-		AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Export Backup",
-			"Could not prepare a temporary backup file.");
-		return;
-	}
+	const TemporaryFile temporaryBackup(destination);
+	const File temporaryFile = temporaryBackup.getFile();
 
 	bool archiveWritten = false;
 	{
@@ -2108,7 +2147,7 @@ void IconMenu::exportBackup()
 			archiveWritten = archiveWritten && !output.getStatus().failed();
 		}
 	}
-	if (!archiveWritten || !temporaryFile.replaceFileIn(destination))
+	if (!archiveWritten || !temporaryBackup.overwriteTargetFileWithTemporary())
 	{
 		temporaryFile.deleteFile();
 		AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Export Backup",
@@ -2124,9 +2163,15 @@ void IconMenu::exportBackup()
 bool IconMenu::importBackup()
 {
 	FileChooser chooser("Import Light Host backup",
-		File::getSpecialLocation(File::userHomeDirectory), "*.zip");
+		File::getSpecialLocation(File::userHomeDirectory), "*.lightbak");
 	if (!chooser.browseForFileToOpen())
 		return false;
+	if (!chooser.getResult().hasFileExtension(".lightbak"))
+	{
+		AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Import Backup",
+			"Please select a .lightbak backup file.");
+		return false;
+	}
 
 	ZipFile archive(chooser.getResult());
 	const int manifestIndex = archive.getIndexOfFileName("manifest.xml");
@@ -2134,7 +2179,7 @@ bool IconMenu::importBackup()
 	if (manifestIndex < 0 || settingsIndex < 0)
 	{
 		AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Import Backup",
-			"The selected ZIP is not a Light Host backup.");
+			"The selected file is not a Light Host backup.");
 		return false;
 	}
 
@@ -2150,7 +2195,7 @@ bool IconMenu::importBackup()
 	ScopedPointer<XmlElement> manifest(XmlDocument::parse(manifestStream->readEntireStreamAsString()));
 	ScopedPointer<XmlElement> settingsXml(XmlDocument::parse(settingsStream->readEntireStreamAsString()));
 	if (manifest == nullptr || !manifest->hasTagName("LIGHTHOST_BACKUP")
-		|| manifest->getIntAttribute("version") != 1
+		|| !PluginBackup::supportsVersion(manifest->getIntAttribute("version"))
 		|| settingsXml == nullptr || !settingsXml->hasTagName("PROPERTIES"))
 	{
 		AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Import Backup",
@@ -2166,6 +2211,12 @@ bool IconMenu::importBackup()
 
 	PropertySet importedSettings;
 	importedSettings.restoreFromXml(*settingsXml);
+	if (!PluginBackup::hasValidPluginLists(importedSettings))
+	{
+		AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Import Backup",
+			"The backup contains invalid plugin settings. Your settings were not changed.");
+		return false;
+	}
 	PropertiesFile* currentSettings = getAppProperties().getUserSettings();
 	StringArray oldPluginPaths, newPluginPaths;
 	StringArray localScanFormats, localScanPaths;
@@ -2182,6 +2233,11 @@ bool IconMenu::importBackup()
 			errors.add("The backup contains an invalid plugin entry.");
 			continue;
 		}
+        if (manifest->getIntAttribute("version") >= 2 && !pluginEntry->hasAttribute("isDirectory"))
+        {
+            errors.add("The backup is missing the plugin file layout.");
+            continue;
+        }
 
 		AudioPluginFormat* format = nullptr;
 		for (int formatIndex = 0; formatIndex < formatManager.getNumFormats(); ++formatIndex)
@@ -2202,9 +2258,12 @@ bool IconMenu::importBackup()
 
 		const File sourcePlugin(File::createFileWithoutCheckingPath(sourcePath));
 		const String pluginFileName = sourcePlugin.getFileName();
-		const FileSearchPath scanPaths =
+		FileSearchPath scanPaths =
 			PluginListComponent::getLastSearchPath(*currentSettings, *format);
-		if (scanPaths.getNumPaths() == 0 || pluginFileName.isEmpty()
+		for (int i = 0; i < localScanFormats.size(); ++i)
+			if (localScanFormats[i].equalsIgnoreCase(formatName))
+				scanPaths = FileSearchPath(localScanPaths[i]);
+		if (pluginFileName.isEmpty()
 			|| pluginFileName == "." || pluginFileName == ".."
 			|| pluginFileName.containsChar('/') || pluginFileName.containsChar('\\'))
 		{
@@ -2212,13 +2271,15 @@ bool IconMenu::importBackup()
 			continue;
 		}
 
-		const File scanDirectory = scanPaths[0];
-		const File destinationPlugin = scanDirectory.getChildFile(pluginFileName);
-		if (!destinationPlugin.isAChildOf(scanDirectory))
+		const File restoreRoot = File::getSpecialLocation(File::currentExecutableFile)
+			.getParentDirectory().getChildFile("VST Plugins");
+		const File destinationPlugin = PluginBackup::restoreDestination(sourcePlugin, scanPaths, restoreRoot);
+		if (!destinationPlugin.exists() && !destinationPlugin.isAChildOf(restoreRoot))
 		{
 			errors.add(formatName + ": the plugin destination is outside its scan location.");
 			continue;
 		}
+		scanPaths.add(destinationPlugin.getParentDirectory());
 		const String archivePrefix = archiveRoot + "/";
 		int archivedFileCount = 0;
 		bool unsafeArchivePath = false;
@@ -2228,7 +2289,7 @@ bool IconMenu::importBackup()
 			if (entry != nullptr && entry->filename.startsWith(archivePrefix))
 			{
 				++archivedFileCount;
-				if (!isSafePluginArchivePath(entry->filename.substring(archivePrefix.length())))
+				if (!PluginBackup::isSafePath(entry->filename.substring(archivePrefix.length())))
 					unsafeArchivePath = true;
 			}
 		}
@@ -2242,6 +2303,14 @@ bool IconMenu::importBackup()
 			errors.add(sourcePlugin.getFileName() + ": plugin files are missing from the backup.");
 			continue;
 		}
+        const bool directory = PluginBackup::isDirectoryArchive(*pluginEntry, archive,
+            archivePrefix, pluginFileName);
+        if (!directory && (archivedFileCount != 1
+            || archive.getIndexOfFileName(archivePrefix + pluginFileName) < 0))
+        {
+            errors.add(pluginFileName + ": backup has an invalid single-file plugin layout.");
+            continue;
+        }
 
 		int localFormatIndex = -1;
 		for (int i = 0; i < localScanFormats.size(); ++i)
@@ -2277,15 +2346,15 @@ bool IconMenu::importBackup()
 				continue;
 
 			const String relativePath = entry->filename.substring(archivePrefix.length());
-			if (!isSafePluginArchivePath(relativePath))
+			if (!PluginBackup::isSafePath(relativePath))
 			{
 				errors.add("The backup contains an unsafe plugin path.");
 				pluginImportFailed = true;
 				break;
 			}
 
-			const File target = destinationPlugin.getChildFile(relativePath);
-			if (!target.isAChildOf(destinationPlugin) || target.exists()
+			const File target = PluginBackup::extractionTarget(destinationPlugin, relativePath, directory);
+			if (target == File() || target.exists()
 				|| !target.getParentDirectory().createDirectory())
 			{
 				errors.add(target.getFullPathName() + ": could not create plugin file.");
@@ -2353,7 +2422,7 @@ bool IconMenu::importBackup()
 
 	settingsImported = true;
 	AlertWindow::showMessageBox(AlertWindow::InfoIcon, "Import Backup",
-		"Backup imported. Light Host will now close; reopen it to apply the restored settings.");
+		"Backup imported. Light Host will now restart to apply the restored settings.");
 	return true;
 }
 

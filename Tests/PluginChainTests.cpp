@@ -2,10 +2,14 @@
 #include "../Source/PluginChain.h"
 #include "../Source/AudioSetup.h"
 #include "../Source/AudioPlayer.h"
+#include "../Source/PluginState.h"
+#include "../Source/PluginBackup.h"
+#include "../Source/PluginWindow.h"
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
 #include <limits>
+#include <thread>
 
 namespace
 {
@@ -210,6 +214,246 @@ void checkPlayerDiagnostics()
             && !log.contains("Callbacks exceeding buffer duration: 0"), "Missed processing deadline was not logged");
     logFile.deleteFile();
 }
+
+void checkIdentityAndMigration()
+{
+    PluginDescription first;
+    first.name = "Same Name";
+    first.version = "1.0";
+    first.pluginFormatName = "VST3";
+    first.fileOrIdentifier = "/plugins/first.vst3";
+    first.uid = 1;
+    PluginDescription second(first);
+    second.fileOrIdentifier = "/plugins/second.vst3";
+    second.uid = 2;
+    KnownPluginList known, active;
+    known.addType(first);
+    active.addType(first);
+    active.addType(second);
+    const auto plugins = PluginState::collectPlugins(known, active);
+    require(plugins.size() == 2, "Export omitted an active-only plugin or duplicated a known one");
+
+    PropertySet settings;
+    settings.setValue(PluginState::legacyKey("state", first), "old shared state");
+    settings.setValue(PluginState::legacyKey("order", first), 7);
+    settings.setValue(PluginState::legacyKey("bypass", first), true);
+    settings.setValue(PluginState::legacyKey("display-name", first), "Custom name");
+    PluginState::migrateLegacySettings(settings, plugins);
+    require(PluginState::key("state", first) != PluginState::key("state", second), "State keys still collide");
+    PluginDescription sameContainer(first);
+    sameContainer.uid = 2;
+    require(PluginState::key("state", first) != PluginState::key("state", sameContainer), "Shell plugin IDs share settings");
+    PluginDescription otherFormat(first);
+    otherFormat.pluginFormatName = "VST";
+    require(PluginState::key("state", first) != PluginState::key("state", otherFormat), "Plugin formats share settings");
+    require(settings.getValue(PluginState::key("state", first)) == "old shared state"
+            && settings.getValue(PluginState::key("state", second)) == "old shared state",
+            "Legacy collision migration lost existing settings");
+    settings.setValue(PluginState::key("state", first), "independent first state");
+    require(settings.getValue(PluginState::key("state", second)) == "old shared state", "Plugin settings are not independent");
+    require(settings.getBoolValue(PluginState::key("bypass", first))
+            && settings.getIntValue(PluginState::key("order", first)) == 7
+            && settings.getValue(PluginState::key("display-name", first)) == "Custom name", "Legacy settings were not preserved");
+    settings.removeValue(PluginState::key("state", first));
+    PluginState::migrateLegacySettings(settings, plugins);
+    require(!settings.containsKey(PluginState::key("state", first)), "Deleted state was resurrected from a legacy key");
+
+    PluginDescription moved(second);
+    moved.fileOrIdentifier = "/another-machine/second.vst3";
+    settings.setValue(PluginState::key("display-name", second), "Portable name");
+    PluginState::remapSettings(settings, second, moved);
+    require(!settings.containsKey(PluginState::key("state", second))
+            && settings.getValue(PluginState::key("state", moved)) == "old shared state"
+            && settings.getValue(PluginState::key("display-name", moved)) == "Portable name", "Restored paths lost plugin settings");
+    const String beforeUpdate = PluginState::key("state", moved);
+    moved.name = "Updated Name";
+    moved.version = "2.0";
+    require(PluginState::key("state", moved) == beforeUpdate, "Updating metadata lost plugin identity");
+
+    PropertySet alreadyMigrated;
+    alreadyMigrated.setValue(PluginState::legacyKey("state", first), "obsolete");
+    alreadyMigrated.setValue(PluginState::key("state", first), "current");
+    PluginState::migrateLegacySettings(alreadyMigrated, { first });
+    require(alreadyMigrated.getValue(PluginState::key("state", first)) == "current", "Migration overwrote newer state");
+
+    PropertySet legacyBackup;
+    legacyBackup.setValue(PluginState::legacyKey("state", second), "legacy backup state");
+    legacyBackup.setValue(PluginState::legacyKey("display-name", second), "Legacy portable name");
+    PluginDescription restored(second);
+    restored.fileOrIdentifier = "/restored/second.vst3";
+    PluginState::remapSettings(legacyBackup, second, restored);
+    PluginState::migrateLegacySettings(legacyBackup, { restored });
+    require(legacyBackup.getValue(PluginState::key("state", restored)) == "legacy backup state"
+            && legacyBackup.getValue(PluginState::key("display-name", restored)) == "Legacy portable name",
+            "An original backup lost state or display names after moving paths");
+}
+
+void checkBackupRoundTrip(const File& root, const String& name, bool bundle, bool legacy)
+{
+    const File original = root.getChildFile("source/" + name);
+    if (bundle)
+    {
+        require(original.getChildFile("Contents").createDirectory().wasOk(), "Could not create bundle fixture");
+        require(original.getChildFile("Contents/binary").replaceWithText("bundle data"), "Could not write bundle fixture");
+    }
+    else
+    {
+        require(original.getParentDirectory().createDirectory().wasOk(), "Could not create file fixture");
+        require(original.replaceWithText("file data"), "Could not write file fixture");
+    }
+    ZipFile::Builder builder;
+    require(PluginBackup::addFiles(builder, original, "plugins/0"), "Could not archive plugin fixture");
+    MemoryOutputStream bytes;
+    require(builder.writeToStream(bytes, nullptr), "Could not write fixture ZIP");
+    MemoryInputStream input(bytes.getData(), bytes.getDataSize(), false);
+    ZipFile archive(input);
+    XmlElement manifest("PLUGIN");
+    if (!legacy)
+        manifest.setAttribute("isDirectory", bundle);
+    const bool directory = PluginBackup::isDirectoryArchive(manifest, archive, "plugins/0/", name);
+    require(directory == bundle, "Wrong layout inferred for backup");
+    const File destination = root.getChildFile(legacy ? "legacy/" + name : "current/" + name);
+    for (int i = 0; i < archive.getNumEntries(); ++i)
+    {
+        const String relative = archive.getEntry(i)->filename.substring(String("plugins/0/").length());
+        const File target = PluginBackup::extractionTarget(destination, relative, directory);
+        require(target != File() && target.getParentDirectory().createDirectory().wasOk(), "Invalid restore target");
+        ScopedPointer<InputStream> stream(archive.createStreamForEntry(i));
+        FileOutputStream output(target);
+        require(stream != nullptr && !output.failedToOpen(), "Could not extract fixture");
+        require(output.writeFromInputStream(*stream, -1) == archive.getEntry(i)->uncompressedSize, "Incomplete restore");
+        output.flush();
+        require(output.getStatus().wasOk(), "Restore write failed");
+    }
+    if (bundle)
+        require(destination.isDirectory() && destination.getChildFile("Contents/binary").loadFileAsString() == "bundle data", "Bundle restore failed");
+    else
+        require(destination.existsAsFile() && destination.loadFileAsString() == "file data", "Single-file restore nested the binary in a directory");
+    require(PluginBackup::extractionTarget(destination, "../escape", directory) == File(), "Unsafe archive path accepted");
+}
+
+void checkBackups()
+{
+    PropertySet settings;
+    require(PluginBackup::hasValidPluginLists(settings), "Empty installation rejected");
+    settings.setValue("pluginListActive", "broken XML");
+    require(!PluginBackup::hasValidPluginLists(settings), "Broken active list accepted");
+    settings.setValue("pluginListActive", "<PROPERTIES/>");
+    require(!PluginBackup::hasValidPluginLists(settings), "Wrong list root accepted");
+    settings.setValue("pluginListActive", "<KNOWNPLUGINS/>");
+    settings.setValue("icon", "white");
+    settings.setValue("plugin-state-example", "binary+/= data");
+    ScopedPointer<XmlElement> saved(settings.createXml("PROPERTIES"));
+    ScopedPointer<XmlElement> parsed(XmlDocument::parse(saved->createDocument(String(), true)));
+    PropertySet restored;
+    require(parsed != nullptr, "Settings XML round trip failed");
+    restored.restoreFromXml(*parsed);
+    require(PluginBackup::hasValidPluginLists(restored)
+            && restored.getValue("icon") == "white"
+            && restored.getValue("plugin-state-example") == "binary+/= data",
+            "Settings values lost in XML round trip");
+    require(PluginBackup::supportsVersion(1) && PluginBackup::supportsVersion(2)
+            && !PluginBackup::supportsVersion(3), "Backup version compatibility regressed");
+    const File parent = File::getSpecialLocation(File::tempDirectory);
+    const File root = parent.getNonexistentChildFile("LightHost-backup-tests", "", false);
+    require(root.isAChildOf(parent) && root.createDirectory().wasOk(), "Invalid temporary test directory");
+    for (bool legacy : { false, true })
+    {
+        checkBackupRoundTrip(root, "Example.dll", false, legacy);
+        checkBackupRoundTrip(root, "Example.vst3", false, legacy);
+        checkBackupRoundTrip(root, "Bundle.vst", true, legacy);
+    }
+    const File missing = root.getChildFile("missing/Example.dll");
+    const File restoreRoot = root.getChildFile("restored");
+    FileSearchPath paths;
+    paths.add(root.getChildFile("system-folder"));
+    const File fresh = PluginBackup::restoreDestination(missing, paths, restoreRoot);
+    require(fresh.isAChildOf(restoreRoot) && fresh.getFileName() == "Example.dll",
+            "Missing plugins must restore outside system scan folders");
+    require(fresh.getParentDirectory().createDirectory().wasOk()
+            && fresh.replaceWithText("partial"), "Could not create interrupted restore fixture");
+    require(PluginBackup::restoreDestination(missing, paths, restoreRoot) != fresh,
+            "Interrupted restore reused as a complete installation");
+    const File installed = root.getChildFile("source/Example.dll");
+    require(PluginBackup::restoreDestination(installed, paths, restoreRoot) == installed,
+            "Original installation was not reused");
+    paths.add(installed.getParentDirectory());
+    require(PluginBackup::restoreDestination(missing, paths, restoreRoot) == installed,
+            "Installation in another scan folder was not reused");
+    require(!PluginBackup::isSafePath("folder/.. /escape")
+            && !PluginBackup::isSafePath("/absolute")
+            && !PluginBackup::isSafePath("C:/absolute"), "Unsafe path validation regressed");
+    require(root.isAChildOf(parent) && root.deleteRecursively(), "Could not clean up the owned test directory");
+}
+
+void checkUnsupportedLayoutAndEditor()
+{
+    AudioProcessorGraph graph;
+    graph.setPlayConfigDetails(2, 2, 48000, 64);
+    graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(
+        AudioProcessorGraph::AudioGraphIOProcessor::audioInputNode), PluginChain::inputNodeId);
+    graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(
+        AudioProcessorGraph::AudioGraphIOProcessor::audioOutputNode), PluginChain::outputNodeId);
+    auto* mono = new GainProcessor(2.0f);
+    mono->setPlayConfigDetails(1, 1, 48000, 64);
+    const auto node = graph.addNode(mono, 1);
+    const StringArray issues = PluginChain::reconnect(graph, 1, [](int) { return false; });
+    require(!issues.isEmpty(), "Unsupported layout was silently accepted");
+    checkAudio(graph, 0.25f);
+    require(mono->calls == 0 && mono->isSuspended(), "Unsupported plugin was still processed");
+    PluginWindow* first = PluginWindow::getWindowFor(node, PluginWindow::Normal);
+    require(first != nullptr && !first->isVisible(), "Editor must be constructed before presentation");
+    PluginWindow* second = PluginWindow::getWindowFor(node, PluginWindow::Normal);
+    const bool reused = first == second;
+    if (!reused)
+        delete second;
+    delete first;
+    require(reused && !PluginWindow::containsActiveWindows(), "Fallback editor was duplicated or leaked");
+    graph.releaseResources();
+}
+
+class StateCaptureProcessor : public GainProcessor
+{
+public:
+    StateCaptureProcessor() : GainProcessor(1.0f) { delayMs = 40; }
+    void processBlock(AudioBuffer<float>& audio, MidiBuffer& midi) override
+    {
+        processing.store(true);
+        entered.signal();
+        GainProcessor::processBlock(audio, midi);
+        processing.store(false);
+    }
+    void getStateInformation(MemoryBlock& state) override
+    {
+        overlapped = processing.load();
+        state.append("saved", 5);
+    }
+    WaitableEvent entered;
+    std::atomic<bool> processing { false };
+    bool overlapped = false;
+};
+
+void checkSynchronizedStateCapture()
+{
+    AudioProcessorGraph graph;
+    StateCaptureProcessor processor;
+    std::thread audio([&]
+    {
+        const ScopedLock graphGuard(graph.getCallbackLock());
+        const ScopedLock callbackGuard(processor.getCallbackLock());
+        AudioBuffer<float> buffer(2, 64);
+        buffer.clear();
+        MidiBuffer midi;
+        processor.processBlock(buffer, midi);
+    });
+    const bool entered = processor.entered.wait(2000);
+    MemoryBlock state;
+    if (entered)
+        PluginState::capture(graph, processor, state);
+    audio.join();
+    require(entered && !processor.overlapped && state.getSize() == 5,
+            "State capture overlapped processing or lost the snapshot");
+}
 }
 
 int main()
@@ -220,8 +464,13 @@ int main()
         checkChain();
         checkChannelSetup();
         checkPlayerDiagnostics();
+        checkIdentityAndMigration();
+        checkBackups();
+        checkUnsupportedLayoutAndEditor();
+        checkSynchronizedStateCapture();
         std::cout << "PASS: stereo routing, bypass CPU work, resume, instance preservation, missing plugins\n";
         std::cout << "PASS: stereo channel migration, invalid-output containment, device diagnostics\n";
+        std::cout << "PASS: plugin identity migration, backup round trips, active-only backups, editor reuse, unsupported layouts, state synchronization\n";
         return 0;
     }
     catch (const std::exception& error)
