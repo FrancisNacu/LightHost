@@ -1627,17 +1627,52 @@ void IconMenu::toggleIconColor()
 
 void IconMenu::loadActivePlugins()
 {
-	PluginWindow::closeAllCurrentlyOpenWindows();
-	player.setProcessor(nullptr);
-    graph.clear();
-    graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioInputNode), PluginChain::inputNodeId);
-    graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioOutputNode), PluginChain::outputNodeId);
+    syncActivePlugins(true);
+}
+
+void IconMenu::syncActivePlugins(bool forceReload)
+{
+    if (forceReload)
+    {
+        PluginWindow::closeAllCurrentlyOpenWindows();
+        player.setProcessor(nullptr);
+        graph.clear();
+        loadedPlugins.clear();
+        graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioInputNode), PluginChain::inputNodeId);
+        graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioOutputNode), PluginChain::outputNodeId);
+    }
 	const std::vector<PluginDescription> plugins = getOrderedActivePlugins();
 	StringArray loadingErrors;
-	// NOTE: Node ids cannot begin at 0.
+    for (const auto& loaded : loadedPlugins)
+    {
+        const bool retained = std::any_of(plugins.begin(), plugins.end(), [&](const PluginDescription& plugin)
+        {
+            return loaded.description.isDuplicateOf(plugin)
+                && loaded.description.pluginFormatName == plugin.pluginFormatName;
+        });
+        if (!retained)
+            if (const auto node = graph.getNodeForId(loaded.nodeId))
+            {
+                PluginWindow::closeWindowsFor(node);
+                graph.removeNode(loaded.nodeId);
+            }
+    }
+    std::vector<LoadedPlugin> nextLoaded;
+    nextLoaded.reserve(plugins.size());
     for (int i = 1; i <= (int) plugins.size(); i++)
     {
         const PluginDescription& plugin = plugins[i - 1];
+        const auto existing = std::find_if(loadedPlugins.begin(), loadedPlugins.end(), [&](const LoadedPlugin& loaded)
+        {
+            return loaded.description.isDuplicateOf(plugin)
+                && loaded.description.pluginFormatName == plugin.pluginFormatName;
+        });
+        if (existing != loadedPlugins.end() && graph.getNodeForId(existing->nodeId) != nullptr)
+        {
+            nextLoaded.push_back({ plugin, existing->nodeId });
+            continue;
+        }
+        nextLoaded.push_back({ plugin, 0 });
         String errorMessage;
         const double sampleRate = graph.getSampleRate() > 0.0 ? graph.getSampleRate() : 48000.0;
         const int blockSize = graph.getBlockSize() > 0 ? graph.getBlockSize() : 512;
@@ -1664,10 +1699,17 @@ void IconMenu::loadActivePlugins()
             delete instance;
             continue;
         }
-        graph.addNode(instance, i);
+        uint32 nodeId = 1;
+        while (nodeId == PluginChain::inputNodeId || nodeId == PluginChain::outputNodeId
+               || graph.getNodeForId(nodeId) != nullptr)
+            ++nodeId;
+        graph.addNode(instance, nodeId);
+        nextLoaded.back().nodeId = nodeId;
     }
+    loadedPlugins.swap(nextLoaded);
     updatePluginConnections();
-	player.setProcessor(&graph);
+    if (forceReload)
+        player.setProcessor(&graph);
     if (!loadingErrors.isEmpty())
     {
         player.audioDeviceError(loadingErrors.joinIntoString("\n"));
@@ -1698,10 +1740,10 @@ void IconMenu::restartAudio()
 
 void IconMenu::updatePluginConnections()
 {
-    const std::vector<PluginDescription> plugins = getOrderedActivePlugins();
     PropertiesFile* settings = getAppProperties().getUserSettings();
-    const StringArray issues = PluginChain::reconnect(graph, (int) plugins.size(),
-        [&](int index) { return settings->getBoolValue(getKey("bypass", plugins[index])); });
+    const StringArray issues = PluginChain::reconnect(graph, (int) loadedPlugins.size(),
+        [&](int index) { return settings->getBoolValue(getKey("bypass", loadedPlugins[index].description)); },
+        [&](int index) { return loadedPlugins[index].nodeId; });
     if (!issues.isEmpty())
     {
         player.audioDeviceError(issues.joinIntoString("\n"));
@@ -1717,7 +1759,6 @@ void IconMenu::changeListenerCallback(ChangeBroadcaster* changed)
         if (savedPluginList != nullptr)
         {
             getAppProperties().getUserSettings()->setValue ("pluginList", savedPluginList);
-            getAppProperties().saveIfNeeded();
         }
     }
     else if (changed == &activePluginList)
@@ -1726,7 +1767,6 @@ void IconMenu::changeListenerCallback(ChangeBroadcaster* changed)
         if (savedPluginList != nullptr)
         {
             getAppProperties().getUserSettings()->setValue ("pluginListActive", savedPluginList);
-            getAppProperties().saveIfNeeded();
         }
         if (pluginListWindow != nullptr)
             pluginListWindow->refreshActivePlugins();
@@ -1859,7 +1899,6 @@ void IconMenu::menuInvocationCallback(int id, IconMenu* im)
 
 void IconMenu::addPluginToActiveList(const PluginDescription& plugin)
 {
-	savePluginStates();
     // Also migrate settings for plugins rediscovered since startup.
     PluginState::migrateLegacySettings(*getAppProperties().getUserSettings(),
         PluginState::collectPlugins(knownPluginList, activePluginList));
@@ -1874,9 +1913,8 @@ void IconMenu::addPluginToActiveList(const PluginDescription& plugin)
 	}
 
 	getAppProperties().getUserSettings()->setValue(getKey("order", plugin), order);
-	getAppProperties().getUserSettings()->saveIfNeeded();
 	activePluginList.addType(plugin);
-	loadActivePlugins();
+	syncActivePlugins(false);
 	if (pluginListWindow != nullptr)
 		pluginListWindow->refreshActivePlugins();
 }
@@ -1889,7 +1927,6 @@ void IconMenu::moveActivePlugin(int fromIndex, int toIndex)
 		|| fromIndex == toIndex)
 		return;
 
-	savePluginStates();
 	const PluginDescription plugin = plugins[fromIndex];
 	plugins.erase(plugins.begin() + fromIndex);
 	plugins.insert(plugins.begin() + toIndex, plugin);
@@ -1897,9 +1934,8 @@ void IconMenu::moveActivePlugin(int fromIndex, int toIndex)
 	PropertiesFile* settings = getAppProperties().getUserSettings();
 	for (int i = 0; i < (int) plugins.size(); ++i)
 		settings->setValue(getKey("order", plugins[i]), i + 1);
-	settings->saveIfNeeded();
 
-	loadActivePlugins();
+	syncActivePlugins(false);
 	if (pluginListWindow != nullptr)
 		pluginListWindow->refreshActivePlugins();
 }
@@ -1913,7 +1949,6 @@ void IconMenu::performPluginAction(int id)
 		if (index < 0 || index >= (int) plugins.size())
 			return;
 
-		savePluginStates();
 		const PluginDescription plugin = plugins[index];
 		const String orderKey = getKey("order", plugin);
 		int unsortedIndex = -1;
@@ -1932,8 +1967,7 @@ void IconMenu::performPluginAction(int id)
 		settings->removeValue(getKey("bypass", plugin));
 		settings->removeValue(getKey("state", plugin));
 		activePluginList.removeType(unsortedIndex);
-		settings->saveIfNeeded();
-		loadActivePlugins();
+		syncActivePlugins(false);
 	}
 	else if (id >= INDEX_BYPASS && id < INDEX_BYPASS + 1000000)
 	{
@@ -1945,13 +1979,14 @@ void IconMenu::performPluginAction(int id)
 		const String key = getKey("bypass", plugins[index]);
 		PropertiesFile* settings = getAppProperties().getUserSettings();
 		settings->setValue(key, !settings->getBoolValue(key));
-		settings->saveIfNeeded();
 		updatePluginConnections();
 	}
 	else if (id >= INDEX_EDIT && id < INDEX_EDIT + 1000000)
 	{
-		const int nodeId = id - INDEX_EDIT + 1;
-		if (const AudioProcessorGraph::Node::Ptr node = graph.getNodeForId(nodeId))
+        const int index = id - INDEX_EDIT;
+        if (index < 0 || index >= (int) loadedPlugins.size())
+            return;
+		if (const AudioProcessorGraph::Node::Ptr node = graph.getNodeForId(loadedPlugins[index].nodeId))
 			if (PluginWindow* const window = PluginWindow::getWindowFor(node, PluginWindow::Normal))
 			{
                 window->setVisible(true);
@@ -2004,30 +2039,30 @@ void IconMenu::deletePluginStates()
     getAppProperties().saveIfNeeded();
 }
 
-void IconMenu::savePluginStates()
+void IconMenu::savePluginStates(bool flushSettings)
 {
 	if (settingsImported)
 		return;
 
-	std::vector<PluginDescription> list = getOrderedActivePlugins();
-    for (int i = 0; i < activePluginList.getNumTypes(); i++)
+    for (const auto& loaded : loadedPlugins)
     {
-		AudioProcessorGraph::Node* node = graph.getNodeForId(i + 1);
+		AudioProcessorGraph::Node* node = graph.getNodeForId(loaded.nodeId);
 		if (node == nullptr)
 			continue;
         AudioProcessor& processor = *node->getProcessor();
-		String pluginUid = getKey("state", list[i]);
+		String pluginUid = getKey("state", loaded.description);
         MemoryBlock savedStateBinary;
         PluginState::capture(graph, processor, savedStateBinary);
         getAppProperties().getUserSettings()->setValue(pluginUid, savedStateBinary.toBase64Encoding());
     }
-    getAppProperties().saveIfNeeded();
+    if (flushSettings)
+        getAppProperties().saveIfNeeded();
 }
 
 void IconMenu::exportBackup()
 {
 	PropertiesFile* settings = getAppProperties().getUserSettings();
-	savePluginStates();
+	savePluginStates(false);
 
 	ScopedPointer<XmlElement> audioState(deviceManager.createStateXml());
 	settings->setValue("audioDeviceState", audioState);
@@ -2058,7 +2093,8 @@ void IconMenu::exportBackup()
 		return;
 	}
 
-	ZipFile::Builder archive;
+	const TemporaryFile temporaryBackup(destination);
+    PluginBackup::ExportTask exportTask(temporaryBackup.getFile());
 	XmlElement manifest("LIGHTHOST_BACKUP");
 	manifest.setAttribute("version", 2);
 	StringArray archivedPluginPaths;
@@ -2098,12 +2134,7 @@ void IconMenu::exportBackup()
 			continue;
 
 		const String archiveRoot = "plugins/" + String(archivedPlugins);
-		if (!PluginBackup::addFiles(archive, pluginFile, archiveRoot))
-		{
-			AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Export Backup",
-				"Could not read the plugin file " + pluginFile.getFullPathName() + ".");
-			return;
-		}
+        exportTask.plugins.add(pluginFile);
 
 		XmlElement* pluginEntry = manifest.createNewChildElement("PLUGIN");
 		pluginEntry->setAttribute("id", archivedPlugins);
@@ -2124,33 +2155,14 @@ void IconMenu::exportBackup()
 	}
 
 	ScopedPointer<XmlElement> settingsXml(settings->createXml("PROPERTIES"));
-	const String settingsText = settingsXml->createDocument(String(), true);
-	MemoryBlock settingsData(settingsText.toRawUTF8(), settingsText.getNumBytesAsUTF8());
-	archive.addEntry(new MemoryInputStream(settingsData, true), 6, "settings.xml",
-		Time::getCurrentTime());
-	const String manifestText = manifest.createDocument(String(), true);
-	MemoryBlock manifestData(manifestText.toRawUTF8(), manifestText.getNumBytesAsUTF8());
-	archive.addEntry(new MemoryInputStream(manifestData, true), 6, "manifest.xml",
-		Time::getCurrentTime());
-
-	const TemporaryFile temporaryBackup(destination);
-	const File temporaryFile = temporaryBackup.getFile();
-
-	bool archiveWritten = false;
+    exportTask.settingsText = settingsXml->createDocument(String(), true);
+    exportTask.manifestText = manifest.createDocument(String(), true);
+    if (!exportTask.runThread(3))
+        return;
+	if (!exportTask.succeeded || !temporaryBackup.overwriteTargetFileWithTemporary())
 	{
-		FileOutputStream output(temporaryFile);
-		if (!output.failedToOpen())
-		{
-			archiveWritten = archive.writeToStream(output, nullptr);
-			output.flush();
-			archiveWritten = archiveWritten && !output.getStatus().failed();
-		}
-	}
-	if (!archiveWritten || !temporaryBackup.overwriteTargetFileWithTemporary())
-	{
-		temporaryFile.deleteFile();
 		AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Export Backup",
-			"Could not write the backup archive.");
+            exportTask.error.isNotEmpty() ? exportTask.error : "Could not write the backup archive.");
 		return;
 	}
 

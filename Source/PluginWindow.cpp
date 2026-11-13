@@ -9,7 +9,8 @@ PluginWindow::PluginWindow (Component* const pluginEditor,
     : DocumentWindow (pluginEditor->getName(), Colours::lightgrey,
                       DocumentWindow::minimiseButton | DocumentWindow::closeButton),
       owner (o),
-      type (t)
+      type (t),
+      lastXProp (getLastXProp(t)), lastYProp (getLastYProp(t))
 {
     setSize (400, 300);
     setUsingNativeTitleBar(true);
@@ -25,15 +26,15 @@ PluginWindow::PluginWindow (Component* const pluginEditor,
 
 void PluginWindow::closeAllCurrentlyOpenWindows()
 {
-    if (activePluginWindows.size() > 0)
-    {
-        for (int i = activePluginWindows.size(); --i >= 0;)
-            delete activePluginWindows.getUnchecked (i);
+    while (!activePluginWindows.isEmpty())
+        delete activePluginWindows.getLast();
+}
 
-        Component dummyModalComp;
-        dummyModalComp.enterModalState();
-        MessageManager::getInstance()->runDispatchLoopUntil (50);
-    }
+void PluginWindow::closeWindowsFor(AudioProcessorGraph::Node* node)
+{
+    for (int i = activePluginWindows.size(); --i >= 0;)
+        if (activePluginWindows.getUnchecked(i)->owner == node)
+            delete activePluginWindows.getUnchecked(i);
 }
 
 bool PluginWindow::containsActiveWindows()
@@ -86,8 +87,8 @@ PluginWindow::~PluginWindow()
 
 void PluginWindow::moved()
 {
-    owner->properties.set (getLastXProp (type), getX());
-    owner->properties.set (getLastYProp (type), getY());
+    owner->properties.set (lastXProp, getX());
+    owner->properties.set (lastYProp, getY());
 }
 
 void PluginWindow::closeButtonPressed()

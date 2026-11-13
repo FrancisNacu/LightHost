@@ -16,6 +16,7 @@ public:
     static PluginWindow* getWindowFor (AudioProcessorGraph::Node*, WindowFormatType);
 
     static void closeAllCurrentlyOpenWindows();
+    static void closeWindowsFor(AudioProcessorGraph::Node*);
     static bool containsActiveWindows();
 
     void moved() override;
@@ -24,6 +25,7 @@ public:
 private:
     AudioProcessorGraph::Node* owner;
     WindowFormatType type;
+    const Identifier lastXProp, lastYProp;
 
     float getDesktopScaleFactor() const override     { return 1.0f; }
 

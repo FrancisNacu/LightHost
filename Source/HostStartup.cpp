@@ -128,6 +128,8 @@ public:
         options.applicationName     = getApplicationName();
         options.filenameSuffix      = "settings";
         options.osxLibrarySubFolder = "Preferences";
+        // Batch routine UI changes; explicit backup and shutdown paths flush.
+        options.millisecondsBeforeSaving = 3000;
 
         checkArguments(&options);
 

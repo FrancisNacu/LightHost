@@ -25,10 +25,10 @@ inline bool connectStereo(AudioProcessorGraph& graph, uint32 sourceId, uint32 de
     return true;
 }
 
-// Plugin node IDs correspond to their one-based positions in the active list.
-// Missing nodes represent plugins that could not be loaded.
-template <typename IsBypassed>
-StringArray reconnect(AudioProcessorGraph& graph, int pluginCount, IsBypassed isBypassed)
+// IDs are stable across list edits. Zero represents a plugin that failed to load.
+template <typename IsBypassed, typename NodeIdAt>
+StringArray reconnect(AudioProcessorGraph& graph, int pluginCount, IsBypassed isBypassed,
+                      NodeIdAt nodeIdAt)
 {
     StringArray issues;
     bool routingFailed = false;
@@ -38,7 +38,7 @@ StringArray reconnect(AudioProcessorGraph& graph, int pluginCount, IsBypassed is
     uint32 previousNodeId = inputNodeId;
     for (int i = 0; i < pluginCount; ++i)
     {
-        const auto node = graph.getNodeForId(i + 1);
+        const auto node = graph.getNodeForId(nodeIdAt(i));
         if (node == nullptr)
             continue;
 
@@ -72,12 +72,18 @@ StringArray reconnect(AudioProcessorGraph& graph, int pluginCount, IsBypassed is
         for (int i = graph.getNumConnections(); --i >= 0;)
             graph.removeConnection(i);
         for (int i = 0; i < pluginCount; ++i)
-            if (const auto node = graph.getNodeForId(i + 1))
+            if (const auto node = graph.getNodeForId(nodeIdAt(i)))
                 node->getProcessor()->suspendProcessing(true);
         if (!connectStereo(graph, inputNodeId, outputNodeId))
             issues.add("Audio passthrough is unavailable for the selected device channels.");
     }
     return issues;
+}
+
+template <typename IsBypassed>
+StringArray reconnect(AudioProcessorGraph& graph, int pluginCount, IsBypassed isBypassed)
+{
+    return reconnect(graph, pluginCount, isBypassed, [](int i) { return uint32(i + 1); });
 }
 }
 

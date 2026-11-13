@@ -28,8 +28,8 @@ public:
     }
 
     const String getName() const override { return "Test gain"; }
-    void prepareToPlay(double, int) override {}
-    void releaseResources() override {}
+    void prepareToPlay(double, int) override { ++prepares; }
+    void releaseResources() override { ++releases; }
     void processBlock(AudioBuffer<float>& audio, MidiBuffer&) override
     {
         if (delayMs > 0)
@@ -51,6 +51,7 @@ public:
     void setStateInformation(const void*, int) override {}
 
     int calls = 0;
+    int prepares = 0, releases = 0;
     int delayMs = 0;
 
 private:
@@ -113,6 +114,49 @@ void checkChain()
     graph.removeNode(2);
     PluginChain::reconnect(graph, 2, [](int) { return false; });
     checkAudio(graph, 0.25f);
+    graph.releaseResources();
+}
+
+void checkStableNodeRouting()
+{
+    AudioProcessorGraph graph;
+    graph.setPlayConfigDetails(2, 2, 48000, 64);
+    graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(
+        AudioProcessorGraph::AudioGraphIOProcessor::audioInputNode), PluginChain::inputNodeId);
+    graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(
+        AudioProcessorGraph::AudioGraphIOProcessor::audioOutputNode), PluginChain::outputNodeId);
+    auto* first = new GainProcessor(2.0f);
+    auto* second = new GainProcessor(3.0f);
+    graph.addNode(first, 41);
+    graph.addNode(second, 77);
+    uint32 ids[] = { 41, 0, 77 };
+    auto reconnect = [&](int bypass)
+    {
+        require(PluginChain::reconnect(graph, 3, [&](int i) { return i == bypass; },
+            [&](int i) { return ids[i]; }).isEmpty(), "Stable node routing failed");
+    };
+    reconnect(-1);
+    checkAudio(graph, 1.5f);
+    std::swap(ids[0], ids[2]);
+    reconnect(-1);
+    checkAudio(graph, 1.5f);
+    require(graph.isConnected(77, 41) && !graph.isConnected(41, 77), "Reorder ignored stable IDs");
+    require(first->prepares == 1 && second->prepares == 1
+            && first->releases == 0 && second->releases == 0, "Reorder reset existing DSP state");
+    reconnect(0);
+    checkAudio(graph, 0.5f);
+    require(second->isSuspended() && !first->isSuspended(), "Bypass targeted the old list position");
+    graph.removeNode(77);
+    ids[0] = 0;
+    reconnect(-1);
+    checkAudio(graph, 0.5f);
+    auto* third = new GainProcessor(4.0f);
+    graph.addNode(third, 8);
+    ids[1] = 8;
+    reconnect(-1);
+    checkAudio(graph, 2.0f);
+    require(graph.getNodeForId(41)->getProcessor() == first && first->prepares == 1,
+            "Adding/removing a node reset a retained plugin");
     graph.releaseResources();
 }
 
@@ -401,6 +445,39 @@ void checkBackups()
         checkBackupRoundTrip(root, "Example.vst3", false, legacy);
         checkBackupRoundTrip(root, "Bundle.vst", true, legacy);
     }
+    {
+        const File output = root.getChildFile("worker.lightbak");
+        PluginBackup::ExportTask worker(output);
+        worker.plugins.add(root.getChildFile("source/Example.dll"));
+        worker.plugins.add(root.getChildFile("source/Bundle.vst"));
+        worker.settingsText = "<PROPERTIES/>";
+        worker.manifestText = "<LIGHTHOST_BACKUP version=\"2\"/>";
+        worker.startThread(3);
+        require(worker.waitForThreadToExit(10000) && worker.succeeded && worker.error.isEmpty(),
+                "Background backup failed");
+        ZipFile archive(output);
+        for (const char* name : { "plugins/0/Example.dll", "plugins/1/Contents/binary", "settings.xml", "manifest.xml" })
+        {
+            const int index = archive.getIndexOfFileName(name);
+            require(index >= 0, "Background backup omitted an entry");
+            ScopedPointer<InputStream> input(archive.createStreamForEntry(index));
+            const String expected = String(name) == "settings.xml" ? worker.settingsText
+                : String(name) == "manifest.xml" ? worker.manifestText
+                : String(name).endsWith("Example.dll") ? "file data" : "bundle data";
+            require(input != nullptr && input->readEntireStreamAsString() == expected,
+                    "Background backup corrupted an entry");
+        }
+        PluginBackup::ExportTask cancelled(root.getChildFile("cancelled.lightbak"));
+        cancelled.plugins.add(root.getChildFile("source/Example.dll"));
+        cancelled.signalThreadShouldExit();
+        cancelled.run();
+        require(!cancelled.succeeded && !root.getChildFile("cancelled.lightbak").exists(),
+                "Cancelled backup was written");
+        PluginBackup::ExportTask missingFile(root.getChildFile("failed.lightbak"));
+        missingFile.plugins.add(root.getChildFile("not-installed.dll"));
+        missingFile.run();
+        require(!missingFile.succeeded && missingFile.error.isNotEmpty(), "Missing backup source was accepted");
+    }
     const File missing = root.getChildFile("missing/Example.dll");
     const File restoreRoot = root.getChildFile("restored");
     FileSearchPath paths;
@@ -445,8 +522,14 @@ void checkUnsupportedLayoutAndEditor()
     const bool reused = first == second;
     if (!reused)
         delete second;
-    delete first;
-    require(reused && !PluginWindow::containsActiveWindows(), "Fallback editor was duplicated or leaked");
+    const auto otherNode = graph.addNode(new GainProcessor(1.0f), 55);
+    PluginWindow* other = PluginWindow::getWindowFor(otherNode, PluginWindow::Normal);
+    PluginWindow::closeWindowsFor(node);
+    require(reused && PluginWindow::containsActiveWindows()
+            && PluginWindow::getWindowFor(otherNode, PluginWindow::Normal) == other,
+            "Removing one plugin closed an unrelated editor");
+    PluginWindow::closeAllCurrentlyOpenWindows();
+    require(!PluginWindow::containsActiveWindows(), "Editor cleanup leaked a window");
     graph.releaseResources();
 }
 
@@ -500,6 +583,7 @@ int main()
     try
     {
         checkChain();
+        checkStableNodeRouting();
         checkChannelSetup();
         checkPlayerDiagnostics();
         checkIdentityAndMigration();
@@ -507,6 +591,7 @@ int main()
         checkUnsupportedLayoutAndEditor();
         checkSynchronizedStateCapture();
         std::cout << "PASS: stereo routing, bypass CPU work, resume, instance preservation, missing plugins\n";
+        std::cout << "PASS: stable node IDs, reorder/add/remove DSP preservation, selective editor cleanup, background backup and cancellation\n";
         std::cout << "PASS: stereo channel migration, invalid-output containment, device diagnostics\n";
         std::cout << "PASS: plugin identity migration, backup round trips, active-only backups, editor reuse, unsupported layouts, state synchronization\n";
         return 0;

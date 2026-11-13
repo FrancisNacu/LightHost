@@ -3,6 +3,114 @@
 
 namespace PluginBackup
 {
+// The worker owns snapshots only; plugins and settings stay on the message thread.
+class ExportTask : public ThreadWithProgressWindow
+{
+public:
+    explicit ExportTask(const File& output)
+        : ThreadWithProgressWindow("Export Backup", true, true, -1), destination(output)
+    {
+        setProgress(-1.0);
+    }
+
+    ~ExportTask() override { stopThread(-1); }
+
+    Array<File> plugins;
+    String settingsText, manifestText, error;
+    bool succeeded = false;
+
+    void run() override
+    {
+        ZipFile::Builder archive;
+        for (int i = 0; i < plugins.size(); ++i)
+        {
+            if (threadShouldExit())
+                return;
+            const File plugin = plugins[i];
+            const String root = "plugins/" + String(i) + "/";
+            setStatusMessage("Reading " + plugin.getFileName());
+            bool added = false;
+            if (plugin.isDirectory())
+            {
+                DirectoryIterator iterator(plugin, true, "*", File::findFiles);
+                while (iterator.next())
+                {
+                    if (threadShouldExit())
+                        return;
+                    const File file = iterator.getFile();
+                    if (!addFile(archive, file, root + file.getRelativePathFrom(plugin).replaceCharacter('\\', '/')))
+                        return;
+                    added = true;
+                }
+            }
+            else
+                added = addFile(archive, plugin, root + plugin.getFileName());
+            if (!added)
+            {
+                error = "Could not read the plugin file " + plugin.getFullPathName();
+                return;
+            }
+        }
+        archive.addEntry(new MemoryInputStream(settingsText.toRawUTF8(), settingsText.getNumBytesAsUTF8(), true),
+                         6, "settings.xml", Time::getCurrentTime());
+        archive.addEntry(new MemoryInputStream(manifestText.toRawUTF8(), manifestText.getNumBytesAsUTF8(), true),
+                         6, "manifest.xml", Time::getCurrentTime());
+        setStatusMessage("Compressing backup...");
+        FileOutputStream output(destination);
+        if (!output.failedToOpen() && !threadShouldExit())
+        {
+            const bool written = archive.writeToStream(output, nullptr);
+            output.flush();
+            succeeded = written && !threadShouldExit() && !output.getStatus().failed();
+        }
+        if (!succeeded && !threadShouldExit())
+            error = "Could not write the backup archive.";
+    }
+
+private:
+    // This JUCE ZIP builder compresses each entry in memory before writing it.
+    // Check cancellation while reading, so even a large entry can be cancelled.
+    class FileSource : public InputStream
+    {
+    public:
+        FileSource(const File& file, Thread& task) : source(file), worker(task) {}
+        int64 getTotalLength() override { return source.getSize(); }
+        int64 getPosition() override { return input == nullptr ? 0 : input->getPosition(); }
+        bool setPosition(int64 position) override { return open() && input->setPosition(position); }
+        bool isExhausted() override { return input != nullptr && input->isExhausted(); }
+        int read(void* data, int bytes) override
+        {
+            return open() ? input->read(data, bytes) : -1;
+        }
+    private:
+        bool open()
+        {
+            if (worker.threadShouldExit())
+                return false;
+            if (input == nullptr)
+                input = source.createInputStream();
+            return input != nullptr;
+        }
+        File source;
+        Thread& worker;
+        ScopedPointer<FileInputStream> input;
+    };
+
+    bool addFile(ZipFile::Builder& archive, const File& file, const String& path)
+    {
+        // Open lazily: large bundles must not keep thousands of handles open.
+        if (!file.existsAsFile())
+        {
+            error = "Could not read " + file.getFullPathName();
+            return false;
+        }
+        archive.addEntry(new FileSource(file, *this), 6, path, file.getLastModificationTime());
+        return true;
+    }
+
+    File destination;
+};
+
 inline bool supportsVersion(int version) { return version == 1 || version == 2; }
 
 inline File restoreDestination(const File& source, const FileSearchPath& scanPaths,

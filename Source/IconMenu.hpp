@@ -29,7 +29,7 @@ public:
 	void reloadPlugins();
 	void loadActivePlugins();
     void restartAudio();
-    void savePluginStates();
+    void savePluginStates(bool flushSettings = true);
     void deletePluginStates();
     void exportBackup();
     bool importBackup();
@@ -49,6 +49,13 @@ private:
 	std::vector<PluginDescription> getOrderedActivePlugins();
 	void setIcon();
     void updatePluginConnections();
+    void syncActivePlugins(bool forceReload);
+    struct LoadedPlugin
+    {
+        PluginDescription description;
+        uint32 nodeId;
+    };
+    std::vector<LoadedPlugin> loadedPlugins;
 
     AudioDeviceManager deviceManager;
     AudioPluginFormatManager formatManager;
