@@ -1,0 +1,13 @@
+diff --git a/modules/juce_gui_basics/menus/juce_PopupMenu.cpp b/modules/juce_gui_basics/menus/juce_PopupMenu.cpp
+--- a/modules/juce_gui_basics/menus/juce_PopupMenu.cpp
++++ b/modules/juce_gui_basics/menus/juce_PopupMenu.cpp
+@@ -25,7 +25,8 @@
+ namespace PopupMenuSettings
+ {
+     const int scrollZone = 24;
+-    const int borderSize = 2;
++    // Light Host paints rounded shadows inside a single transparent popup window.
++    const int borderSize = 12;
+     const int dismissCommandId = 0x6287345f;
+ 
+     static bool menuWasHiddenBecauseOfAppChange = false;

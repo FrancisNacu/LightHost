@@ -115,7 +115,12 @@
       <FILE id="audioSetupHeader" name="AudioSetup.h" compile="0" resource="0" file="Source/AudioSetup.h"/>
       <FILE id="audioPlayerHeader" name="AudioPlayer.h" compile="0" resource="0" file="Source/AudioPlayer.h"/>
       <FILE id="pluginStateHeader" name="PluginState.h" compile="0" resource="0" file="Source/PluginState.h"/>
+      <FILE id="pluginInstancesHeader" name="PluginInstances.h" compile="0" resource="0" file="Source/PluginInstances.h"/>
       <FILE id="pluginBackupHeader" name="PluginBackup.h" compile="0" resource="0" file="Source/PluginBackup.h"/>
+      <FILE id="hostDesignHeader" name="HostDesign.h" compile="0" resource="0" file="Source/HostDesign.h"/>
+      <FILE id="hostLookAndFeelHeader" name="HostLookAndFeel.h" compile="0" resource="0" file="Source/HostLookAndFeel.h"/>
+      <FILE id="hostContentHeader" name="HostWindowContent.h" compile="0" resource="0" file="Source/HostWindowContent.h"/>
+      <FILE id="pluginLibraryViewHeader" name="PluginLibraryView.h" compile="0" resource="0" file="Source/PluginLibraryView.h"/>
     </GROUP>
     <GROUP id="{B6DF5A1E-D458-C20A-CD4E-C679E4461593}" name="Resources">
       <FILE id="kxxp8K" name="icon.png" compile="0" resource="1" file="Resources/icon.png"/>

@@ -10,6 +10,7 @@
 #define IconMenu_hpp
 
 #include "AudioPlayer.h"
+#include "PluginInstances.h"
 
 ApplicationProperties& getAppProperties();
 void restartAfterSettingsImport();
@@ -25,6 +26,7 @@ public:
     static void menuInvocationCallback(int id, IconMenu*);
     void changeListenerCallback(ChangeBroadcaster* changed);
 	static String getKey(const String& type, const PluginDescription& plugin);
+    static String getKey(const String& type, const PluginInstance& plugin);
 	AudioDeviceManager& getDeviceManager() noexcept { return deviceManager; }
 	void reloadPlugins();
 	void loadActivePlugins();
@@ -46,13 +48,13 @@ private:
 	void performPluginAction(int id);
 	void addPluginToActiveList(const PluginDescription& plugin);
 	void moveActivePlugin(int fromIndex, int toIndex);
-	std::vector<PluginDescription> getOrderedActivePlugins();
+	std::vector<PluginInstance> getOrderedActivePlugins();
 	void setIcon();
     void updatePluginConnections();
     void syncActivePlugins(bool forceReload);
     struct LoadedPlugin
     {
-        PluginDescription description;
+        PluginInstance description;
         uint32 nodeId;
     };
     std::vector<LoadedPlugin> loadedPlugins;
@@ -60,7 +62,7 @@ private:
     AudioDeviceManager deviceManager;
     AudioPluginFormatManager formatManager;
     KnownPluginList knownPluginList;
-    KnownPluginList activePluginList;
+    PluginInstances activePluginList;
     PopupMenu menu;
 	uint32 lastLeftClickTime;
     bool settingsImported;

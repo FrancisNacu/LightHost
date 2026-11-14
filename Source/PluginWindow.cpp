@@ -37,6 +37,13 @@ void PluginWindow::closeWindowsFor(AudioProcessorGraph::Node* node)
             delete activePluginWindows.getUnchecked(i);
 }
 
+void PluginWindow::setTitleFor(AudioProcessorGraph::Node* node, const String& title)
+{
+    for (auto* window : activePluginWindows)
+        if (window->owner == node)
+            window->setName(title);
+}
+
 bool PluginWindow::containsActiveWindows()
 {
     return activePluginWindows.size() > 0;

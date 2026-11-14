@@ -1,6 +1,9 @@
 #ifndef LIGHTHOST_PLUGIN_BACKUP_H
 #define LIGHTHOST_PLUGIN_BACKUP_H
 
+#include "PluginState.h"
+#include "PluginInstances.h"
+
 namespace PluginBackup
 {
 // The worker owns snapshots only; plugins and settings stay on the message thread.
@@ -111,7 +114,38 @@ private:
     File destination;
 };
 
-inline bool supportsVersion(int version) { return version == 1 || version == 2; }
+inline bool supportsVersion(int version) { return version >= 1 && version <= 3; }
+
+inline void prepareImportedSettings(PropertySet& settings, const StringArray& oldPaths,
+                                    const StringArray& newPaths, const File& appDirectory)
+{
+    for (const char* listKey : { "pluginList", "pluginListActive" })
+    {
+        ScopedPointer<XmlElement> list(XmlDocument::parse(settings.getValue(listKey)));
+        if (list == nullptr)
+            continue;
+        forEachXmlChildElementWithTagName(*list, entry, "PLUGIN")
+        {
+            PluginDescription before;
+            if (!before.loadFromXml(*entry))
+                continue;
+            for (int i = 0; i < jmin(oldPaths.size(), newPaths.size()); ++i)
+                if (before.fileOrIdentifier.equalsIgnoreCase(oldPaths[i]))
+                {
+                    PluginDescription after(before);
+                    after.fileOrIdentifier = newPaths[i];
+                    PluginState::remapSettings(settings, before, after);
+                    entry->setAttribute("file", after.fileOrIdentifier);
+                    break;
+                }
+        }
+        settings.setValue(listKey, list->createDocument(String(), true));
+    }
+    // Import already resolved each binary to an existing installation or a newly
+    // extracted file. On restart, do not relocate those resolved paths a second
+    // time using the exporting computer's portable directory.
+    settings.setValue("portableAppDirectory", appDirectory.getFullPathName());
+}
 
 inline File restoreDestination(const File& source, const FileSearchPath& scanPaths,
                                const File& restoreRoot)
@@ -130,7 +164,7 @@ inline File restoreDestination(const File& source, const FileSearchPath& scanPat
         .getChildFile(source.getFileName());
 }
 
-inline bool hasValidPluginLists(const PropertySet& settings)
+inline bool hasValidPluginLists(const PropertySet& settings, bool requireInstanceIds = false)
 {
     for (const char* key : { "pluginList", "pluginListActive" })
     {
@@ -139,11 +173,20 @@ inline bool hasValidPluginLists(const PropertySet& settings)
         ScopedPointer<XmlElement> list(XmlDocument::parse(settings.getValue(key)));
         if (list == nullptr || !list->hasTagName("KNOWNPLUGINS"))
             return false;
+        StringArray ids;
         forEachXmlChildElementWithTagName(*list, plugin, "PLUGIN")
         {
             PluginDescription description;
             if (!description.loadFromXml(*plugin) || description.fileOrIdentifier.isEmpty())
                 return false;
+            if (String(key) == "pluginListActive")
+            {
+                const String id = plugin->getStringAttribute("instanceId");
+                if ((requireInstanceIds || plugin->hasAttribute("instanceId"))
+                    && (!PluginInstance::validId(id) || ids.contains(id)))
+                    return false;
+                if (id.isNotEmpty()) ids.add(id);
+            }
         }
     }
     return true;

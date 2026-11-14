@@ -13,6 +13,7 @@
 #include "AudioSetup.h"
 #include "PluginState.h"
 #include "PluginBackup.h"
+#include "HostDesign.h"
 #include <algorithm>
 #include <ctime>
 #include <functional>
@@ -39,243 +40,6 @@ enum ActivePluginHoveredAction
 };
 
 const char* const activePluginDragPrefix = "active-plugin:";
-
-class PluginActionMenuLookAndFeel : public LookAndFeel_V3
-{
-public:
-	PluginActionMenuLookAndFeel()
-	{
-	}
-
-	void drawCallOutBoxBackground(CallOutBox& box, Graphics& graphics,
-		const Path& path, Image& cachedImage) override
-	{
-		if (cachedImage.isNull())
-		{
-			cachedImage = Image(Image::ARGB, box.getWidth(), box.getHeight(), true);
-			Graphics shadowGraphics(cachedImage);
-			DropShadow(Colours::black.withAlpha(0.18f), 10, Point<int>(0, 3))
-				.drawForPath(shadowGraphics, path);
-		}
-
-		graphics.drawImageAt(cachedImage, 0, 0);
-		graphics.setColour(Colours::white);
-		graphics.fillPath(path);
-		graphics.setColour(Colour(0xffE3E1F0));
-		graphics.strokePath(path, PathStrokeType(1.0f));
-	}
-
-	int getCallOutBoxBorderSize(const CallOutBox&) override
-	{
-		return 0;
-	}
-};
-
-class PluginActionMenuContent : public Component
-{
-public:
-	explicit PluginActionMenuContent(std::function<void(int)> action_)
-		: action(action_)
-	{
-		setSize(128, 68);
-	}
-
-	void paint(Graphics& graphics) override
-	{
-		graphics.setColour(hoveredAction == 1
-			? Colour(0xffECE9FA) : Colours::white);
-		graphics.fillRoundedRectangle(2.0f, 2.0f, (float) getWidth() - 4.0f,
-			30.0f, 4.0f);
-		graphics.setColour(Colour(0xff1D1B2E));
-		graphics.setFont(Font(13.0f));
-		graphics.drawText("Rename", 14, 2, getWidth() - 28, 30,
-			Justification::centredLeft);
-
-		graphics.setColour(Colour(0xffEEECF7));
-		graphics.fillRect(12, 34, getWidth() - 24, 1);
-
-		graphics.setColour(hoveredAction == 2
-			? Colour(0xffFCE8E8) : Colours::white);
-		graphics.fillRoundedRectangle(2.0f, 36.0f, (float) getWidth() - 4.0f,
-			30.0f, 4.0f);
-		graphics.setColour(Colour(0xffC42B2B));
-		graphics.drawText("Delete", 14, 36, getWidth() - 28, 30,
-			Justification::centredLeft);
-	}
-
-	void mouseMove(const MouseEvent& event) override
-	{
-		const int actionAtPosition = getActionAtPosition(event.y);
-		if (hoveredAction != actionAtPosition)
-		{
-			hoveredAction = actionAtPosition;
-			repaint();
-		}
-	}
-
-	void mouseExit(const MouseEvent&) override
-	{
-		if (hoveredAction != 0)
-		{
-			hoveredAction = 0;
-			repaint();
-		}
-	}
-
-	void mouseUp(const MouseEvent& event) override
-	{
-		const int selectedAction = getActionAtPosition(event.y);
-		if (selectedAction == 0)
-			return;
-
-		if (auto* callout = dynamic_cast<CallOutBox*>(getParentComponent()))
-			callout->dismiss();
-		action(selectedAction);
-	}
-
-private:
-	int getActionAtPosition(int y) const
-	{
-		if (y >= 0 && y < 34)
-			return 1;
-		if (y >= 34 && y < getHeight())
-			return 2;
-		return 0;
-	}
-
-	std::function<void(int)> action;
-	int hoveredAction = 0;
-};
-
-PluginActionMenuLookAndFeel pluginActionMenuLookAndFeel;
-
-class TrayMenuLookAndFeel : public LookAndFeel_V3
-{
-public:
-	TrayMenuLookAndFeel()
-		: appIcon(ImageFileFormat::loadFrom(BinaryData::icon_png, BinaryData::icon_pngSize))
-	{
-		setColour(PopupMenu::backgroundColourId, Colour(0x00000000));
-		setColour(PopupMenu::textColourId, Colour(0xff1D1B2E));
-		setColour(PopupMenu::highlightedBackgroundColourId, Colour(0xffF4F3FB));
-		setColour(PopupMenu::highlightedTextColourId, Colour(0xff1D1B2E));
-	}
-
-	void drawPopupMenuBackground(Graphics& graphics, int width, int height) override
-	{
-		const juce::Rectangle<float> bounds(0.5f, 0.5f,
-			(float) width - 1.0f, (float) height - 1.0f);
-		graphics.setColour(Colours::white);
-		graphics.fillRoundedRectangle(bounds.reduced(0.5f), 14.0f);
-		graphics.setColour(Colour(0xffE3E1F0));
-		graphics.drawRoundedRectangle(bounds, 14.0f, 1.0f);
-	}
-
-	void drawPopupMenuItem(Graphics& graphics, const juce::Rectangle<int>& area,
-		bool isSeparator, bool isActive, bool isHighlighted, bool isTicked,
-		bool, const String& text, const String&, const Drawable*,
-		const Colour* textColour) override
-	{
-		if (isSeparator)
-		{
-			const juce::Rectangle<int> divider = area.reduced(10, 0);
-			graphics.setColour(Colour(0xffEEECF7));
-			graphics.fillRect(divider.getX(), divider.getCentreY(),
-				divider.getWidth(), 1);
-			return;
-		}
-
-		if (isHighlighted)
-		{
-			graphics.setColour(Colour(0xffF4F3FB));
-			graphics.fillRoundedRectangle(area.reduced(4, 1).toFloat(), 5.0f);
-		}
-
-		Colour itemTextColour = textColour != nullptr
-			? *textColour
-			: Colour(0xff1D1B2E);
-		if (! isActive)
-			itemTextColour = itemTextColour.withAlpha(0.45f);
-
-		graphics.setColour(itemTextColour);
-		graphics.setFont(Font(13.0f));
-		graphics.drawFittedText(text, area.reduced(14, 0),
-			Justification::centredLeft, 1);
-
-		if (text == "Run on startup")
-		{
-			const juce::Rectangle<float> track((float) area.getRight() - 44.0f,
-				(float) area.getCentreY() - 9.0f, 34.0f, 18.0f);
-			graphics.setColour(isTicked ? Colour(0xff5B45D6) : Colour(0xffCFCBE6));
-			graphics.fillRoundedRectangle(track, 9.0f);
-			graphics.setColour(Colours::white);
-			graphics.fillEllipse(track.getX() + (isTicked ? 18.0f : 2.0f),
-				track.getY() + 2.0f, 14.0f, 14.0f);
-		}
-	}
-
-	void drawPopupMenuSectionHeader(Graphics& graphics,
-		const juce::Rectangle<int>& area, const String& sectionName) override
-	{
-		graphics.drawImageWithin(appIcon, 14, area.getY(), 20, area.getHeight(),
-			RectanglePlacement::centred);
-		graphics.setColour(Colour(0xff1D1B2E));
-		graphics.setFont(Font(14.0f, Font::bold));
-		graphics.drawFittedText(sectionName,
-			juce::Rectangle<int>(42, area.getY(), area.getWidth() - 54,
-				area.getHeight() - 1),
-			Justification::centredLeft, 1);
-		graphics.setColour(Colour(0xffEEECF7));
-		graphics.fillRect(10, area.getBottom() - 1, area.getWidth() - 20, 1);
-	}
-
-	void getIdealPopupMenuItemSize(const String&, bool isSeparator,
-		int standardItemHeight, int& idealWidth, int& idealHeight) override
-	{
-		if (isSeparator)
-		{
-			idealWidth = 240;
-			idealHeight = 4;
-			return;
-		}
-
-		idealHeight = standardItemHeight > 0 ? standardItemHeight : 36;
-		idealWidth = 240;
-	}
-
-private:
-	Image appIcon;
-};
-
-TrayMenuLookAndFeel trayMenuLookAndFeel;
-
-void remapPluginPaths(PropertySet& settings, const String& key,
-	const StringArray& oldPaths, const StringArray& newPaths)
-{
-	ScopedPointer<XmlElement> pluginList(XmlDocument::parse(settings.getValue(key)));
-	if (pluginList == nullptr)
-		return;
-
-	forEachXmlChildElementWithTagName(*pluginList, plugin, "PLUGIN")
-	{
-		const String oldPath = plugin->getStringAttribute("file");
-		for (int i = 0; i < oldPaths.size(); ++i)
-			if (oldPath.equalsIgnoreCase(oldPaths[i]))
-			{
-                PluginDescription before;
-                if (before.loadFromXml(*plugin))
-                {
-                    PluginDescription after(before);
-                    after.fileOrIdentifier = newPaths[i];
-                    PluginState::remapSettings(settings, before, after);
-                }
-				plugin->setAttribute("file", newPaths[i]);
-				break;
-			}
-	}
-
-	settings.setValue(key, pluginList->createDocument(String(), true));
-}
 
 #if JUCE_WINDOWS
 const wchar_t* const startupRegistryPath = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -402,45 +166,6 @@ void refreshStartupRegistration()
 }
 #endif
 }
-
-class LightHostSwitch : public ToggleButton
-{
-public:
-    explicit LightHostSwitch (const String& text)
-        : ToggleButton (text)
-    {
-        setClickingTogglesState (true);
-    }
-
-    void paintButton (Graphics& g, bool isMouseOverButton, bool isButtonDown) override
-    {
-        const juce::Rectangle<float> buttonBounds = getLocalBounds().toFloat();
-        juce::Rectangle<float> track (buttonBounds.getRight() - 42.0f,
-                                      buttonBounds.getCentreY() - 10.0f, 38.0f, 20.0f);
-        const bool enabled = getToggleState();
-
-        Colour trackColour = enabled ? Colour (0xff5B45D6) : Colour (0xffCFCBE6);
-        if (isMouseOverButton || isButtonDown)
-            trackColour = trackColour.brighter (isButtonDown ? 0.12f : 0.06f);
-        g.setColour (trackColour);
-        g.fillRoundedRectangle (track, 10.0f);
-        g.setColour (Colours::white);
-        const float thumbX = enabled ? track.getRight() - 18.0f : track.getX() + 2.0f;
-        g.fillEllipse (thumbX, track.getY() + 2.0f, 16.0f, 16.0f);
-
-        g.setColour (Colour (0xff1D1B2E).withAlpha (isEnabled() ? 1.0f : 0.5f));
-        g.setFont (Font (14.0f));
-        g.drawText (getButtonText(), 0, 0, getWidth() - 52, getHeight(),
-                    Justification::centredLeft, true);
-
-        if (hasKeyboardFocus (false))
-        {
-            g.setColour (Colour (0xff5B45D6));
-            g.drawRoundedRectangle (buttonBounds.reduced (0.5f), 5.0f, 1.0f);
-        }
-
-    }
-};
 
 class LightHostAudioDeviceSelector : public AudioDeviceSelectorComponent
 {
@@ -613,110 +338,116 @@ public:
           audioDeviceSelector (owner_.getDeviceManager())
     {
         setOpaque (false);
-        audioDeviceSelector.setItemHeight (44);
+        audioDeviceSelector.setItemHeight (34);
         audioViewport.setViewedComponent (&audioDeviceSelector, false);
         audioViewport.setScrollBarsShown (true, false);
-        audioViewport.setScrollBarThickness (9);
-        audioViewport.setColour (ScrollBar::thumbColourId, Colour (0xffA8A4B8));
-        audioViewport.setColour (ScrollBar::backgroundColourId, Colour (0xffF4F3FB));
         audioViewport.onScrollStateChanged = [this] (bool canScrollUp, bool canScrollDown)
         {
             audioScrollIndicator.setScrollState (canScrollUp, canScrollDown);
         };
         addAndMakeVisible (audioViewport);
         addAndMakeVisible (audioScrollIndicator);
-        restartAudioButton.setButtonText("Restart audio");
-        restartAudioButton.setTooltip("Restart the audio device and reload plugins, keeping their settings");
+        restartAudioButton.setButtonText("Restart audio...");
         restartAudioButton.addListener(this);
         addAndMakeVisible(restartAudioButton);
-
-        appTitle.setText ("App", dontSendNotification);
-        appTitle.setFont (Font (20.0f, Font::bold));
-        appTitle.setColour (Label::textColourId, Colour (0xff1D1B2E));
-        addAndMakeVisible (appTitle);
 
         runOnStartupButton.addListener (this);
         addAndMakeVisible (runOnStartupButton);
         invertIconButton.addListener (this);
         addAndMakeVisible (invertIconButton);
 
-        importButton.setButtonText ("Import backup...");
+        importButton.setButtonText ("Import...");
         importButton.addListener (this);
         addAndMakeVisible (importButton);
-        exportButton.setButtonText ("Export backup...");
+        exportButton.setButtonText ("Export...");
         exportButton.addListener (this);
         addAndMakeVisible (exportButton);
 
-        deleteButton.setButtonText ("Delete plugin states");
-        deleteButton.setColour (TextButton::textColourOnId, Colour (0xffC42B2B));
-        deleteButton.setColour (TextButton::textColourOffId, Colour (0xffC42B2B));
+        deleteButton.setButtonText ("Delete plugin states...");
+        deleteButton.setColour (TextButton::buttonColourId, HostDesign::canvas);
+        deleteButton.setColour (TextButton::textColourOnId, HostDesign::danger);
+        deleteButton.setColour (TextButton::textColourOffId, HostDesign::danger);
         deleteButton.addListener (this);
         addAndMakeVisible (deleteButton);
 
-#if JUCE_WINDOWS
-        bool enabled = false;
-        if (getRunOnStartupEnabled (enabled))
-            runOnStartupButton.setToggleState (enabled, dontSendNotification);
+#if !JUCE_WINDOWS
+        runOnStartupButton.setEnabled (false);
 #endif
+        refreshStartupState();
 
         const String iconColour = getAppProperties().getUserSettings()->getValue ("icon");
         invertIconButton.setToggleState (iconColour.equalsIgnoreCase ("black"),
                                          dontSendNotification);
     }
 
+    void refreshStartupState()
+    {
+#if JUCE_WINDOWS
+        bool enabled = false;
+        if (getRunOnStartupEnabled(enabled))
+            runOnStartupButton.setToggleState(enabled, dontSendNotification);
+#endif
+    }
+
     void paint (Graphics& g) override
     {
-        const Colour surface (0xffFFFFFF);
-        const Colour border (0xffE3E1F0);
-        g.setColour (surface);
-        g.fillRoundedRectangle (audioCard.toFloat(), 14.0f);
-        g.fillRoundedRectangle (appCard.toFloat(), 14.0f);
-        g.setColour (border);
-        g.drawRoundedRectangle (audioCard.toFloat().reduced (0.5f), 14.0f, 1.0f);
-        g.drawRoundedRectangle (appCard.toFloat().reduced (0.5f), 14.0f, 1.0f);
-        g.setColour (Colour (0xff1D1B2E));
-        g.setFont (Font (20.0f, Font::bold));
-        g.drawText ("Audio", audioCard.withTrimmedLeft (18).withTrimmedTop (14)
-                    .withHeight (28), Justification::centredLeft);
-        g.setColour (Colour (0xffEEECF7));
-        g.drawHorizontalLine (appCard.getY() + 56, (float) appCard.getX() + 18.0f,
-                              (float) appCard.getRight() - 18.0f);
-        g.drawHorizontalLine (appCard.getY() + 168, (float) appCard.getX() + 18.0f,
-                              (float) appCard.getRight() - 18.0f);
+        HostDesign::drawPanel (g, audioCard);
+        HostDesign::drawPanel (g, appCard);
+        g.setColour (HostDesign::text);
+        g.setFont (Font (21.0f, Font::bold));
+        g.drawText ("Audio", 0, 0, audioCard.getWidth(), 28, Justification::centredLeft);
+        g.drawText ("App", appCard.getX(), 0, appCard.getWidth(), 28, Justification::centredLeft);
+        g.drawText ("Backup & restore", appCard.getX(), 168, appCard.getWidth(), 28, Justification::centredLeft);
+        g.drawText ("Plugin states", appCard.getX(), 322, appCard.getWidth(), 28, Justification::centredLeft);
+        g.setColour (HostDesign::border);
+        g.drawHorizontalLine (appCard.getY() + 52, (float) appCard.getX() + 16,
+                              (float) appCard.getRight() - 16);
+        g.drawHorizontalLine (getHeight() - 68, 0.0f, (float) audioCard.getRight());
+        g.setColour (HostDesign::secondary);
+        g.setFont (HostDesign::bodyFont(15.0f));
+        g.drawFittedText ("Keep your settings, plugin states, and available plugin files together.",
+            appCard.getX(), 204, appCard.getWidth(), 42, Justification::topLeft, 3);
+        g.drawText (".lightbak backup files", appCard.getX(), 290, appCard.getWidth(), 18, Justification::centredLeft);
+        g.drawText ("Reset saved settings for your effects.", appCard.getX(), 356,
+            appCard.getWidth(), 22, Justification::centredLeft);
+        g.drawText ("Up to two input and two output channels.", 0, audioCard.getBottom() + 8,
+            audioCard.getWidth(), 20, Justification::centredLeft);
+        g.drawFittedText ("Reopen the device and reload effects.\nAudio pauses briefly; plugin editors close.",
+            0, getHeight() - 54, audioCard.getWidth() - 150, 42, Justification::centredLeft, 2);
+#if JUCE_WINDOWS
+        const String backgroundHint ("Light Host keeps running in the system tray.");
+#else
+        const String backgroundHint ("Light Host keeps running in the menu bar.");
+#endif
+        g.drawFittedText (backgroundHint, appCard.getX(), 440, appCard.getWidth(), 36,
+                         Justification::topLeft, 2);
     }
 
     void resized() override
     {
-        juce::Rectangle<int> area (getLocalBounds().reduced (12));
-        const int gap = 12;
-        const int cardWidth = (area.getWidth() - gap) * 63 / 100;
-        audioCard = area.removeFromLeft (cardWidth);
+        juce::Rectangle<int> area (getLocalBounds());
+        const int gap = 28;
+        const int cardWidth = (area.getWidth() - gap) * 60 / 100;
+        audioCard = area.removeFromLeft (cardWidth).withTrimmedTop (36).withTrimmedBottom (108);
         area.removeFromLeft (gap);
-        appCard = area;
-        restartAudioButton.setBounds(audioCard.getRight() - 136, audioCard.getY() + 14, 120, 28);
+        appCard = area.withY (36).withHeight (104);
+        restartAudioButton.setBounds (audioCard.getRight() - 136, getHeight() - 52, 136, 34);
 
-        juce::Rectangle<int> audioContents = audioCard.reduced (16);
-        audioContents.removeFromTop (34);
+        juce::Rectangle<int> audioContents = audioCard.reduced (10);
         audioViewport.setBounds (audioContents);
         audioScrollIndicator.setBounds (audioContents);
         audioDeviceSelector.setSize (
             jmax (0, audioViewport.getWidth() - audioViewport.getScrollBarThickness()),
             jmax (audioViewport.getHeight(), audioDeviceSelector.getHeight()));
 
-        juce::Rectangle<int> appContents = appCard.reduced (18);
-        appTitle.setBounds (appContents.removeFromTop (34));
-        appContents.removeFromTop (12);
-        runOnStartupButton.setBounds (appContents.removeFromTop (44));
-        appContents.removeFromTop (8);
-        invertIconButton.setBounds (appContents.removeFromTop (44));
-        appContents.removeFromTop (18);
-        juce::Rectangle<int> backupButtons = appContents.removeFromTop (44);
-        const int importWidth = (backupButtons.getWidth() - 8) / 2;
-        importButton.setBounds (backupButtons.removeFromLeft (importWidth));
-        backupButtons.removeFromLeft (8);
-        exportButton.setBounds (backupButtons);
-        appContents.removeFromTop (12);
-        deleteButton.setBounds (appContents.removeFromTop (44));
+        juce::Rectangle<int> appContents = appCard.reduced (16, 0);
+        runOnStartupButton.setBounds (appContents.removeFromTop (52));
+        invertIconButton.setBounds (appContents);
+        juce::Rectangle<int> backupButtons (appCard.getX(), 254, appCard.getWidth(), 34);
+        exportButton.setBounds (backupButtons.removeFromLeft ((backupButtons.getWidth() - 10) / 2));
+        backupButtons.removeFromLeft (10);
+        importButton.setBounds (backupButtons);
+        deleteButton.setBounds (appCard.getX(), 388, appCard.getWidth(), 34);
     }
 
     void buttonClicked (Button* button) override
@@ -730,9 +461,7 @@ public:
         {
 #if JUCE_WINDOWS
             toggleRunOnStartup();
-            bool enabled = false;
-            if (getRunOnStartupEnabled (enabled))
-                runOnStartupButton.setToggleState (enabled, dontSendNotification);
+            refreshStartupState();
 #endif
             return;
         }
@@ -758,8 +487,13 @@ public:
 
         if (button == &deleteButton)
         {
-            owner.deletePluginStates();
-            owner.loadActivePlugins();
+            if (AlertWindow::showOkCancelBox (AlertWindow::WarningIcon, "Delete plugin states",
+                "Reset all active effects to their default settings? This closes plugin editors and briefly interrupts audio.",
+                "Reset effects", "Cancel", this))
+            {
+                owner.deletePluginStates();
+                owner.loadActivePlugins();
+            }
         }
     }
 
@@ -768,9 +502,8 @@ private:
     LightHostAudioDeviceSelector audioDeviceSelector;
     AudioSettingsViewport audioViewport;
     AudioScrollIndicator audioScrollIndicator;
-    Label appTitle;
-    LightHostSwitch runOnStartupButton {"Run on startup"};
-    LightHostSwitch invertIconButton {"Invert icon color"};
+    HostDesign::Switch runOnStartupButton {"Run on startup"};
+    HostDesign::Switch invertIconButton {"Invert tray icon"};
     TextButton importButton, exportButton, deleteButton, restartAudioButton;
     juce::Rectangle<int> audioCard, appCard;
 };
@@ -781,108 +514,104 @@ public:
     LightHostAboutView()
     {
         title.setText ("Light Host", dontSendNotification);
-        title.setFont (Font (22.0f, Font::bold));
+        title.setFont (Font (26.0f, Font::bold));
+        title.setJustificationType (Justification::centred);
         addAndMakeVisible (title);
 
         version.setText ("Version " + String (ProjectInfo::versionString), dontSendNotification);
-        version.setFont (Font (15.0f));
-        version.setColour (Label::textColourId, Colour (0xff6B6880));
+        version.setFont (HostDesign::bodyFont(15.0f));
+        version.setJustificationType (Justification::centred);
+        version.setColour (Label::textColourId, Colour (0xff686F7B));
         addAndMakeVisible (version);
 
-        credit.setText ("Built with JUCE and designed for a modern single-window workflow.", dontSendNotification);
-        credit.setFont (Font (14.0f));
-        credit.setColour (Label::textColourId, Colour (0xff6B6880));
+        credit.setText ("A lightweight stereo effects host.\nBuilt with JUCE. Created by Rolando Islas.", dontSendNotification);
+        credit.setJustificationType (Justification::centred);
+        credit.setFont (HostDesign::bodyFont(15.0f));
+        credit.setColour (Label::textColourId, Colour (0xff686F7B));
         addAndMakeVisible (credit);
     }
 
     void paint (Graphics& g) override
     {
-        g.fillAll (Colour (0xffF4F3FB));
+        g.fillAll (HostDesign::canvas);
+        HostDesign::drawSymbol (g, HostDesign::waveform,
+            juce::Rectangle<float> ((float) getWidth() / 2 - 26, 48, 52, 52), HostDesign::text);
     }
 
     void resized() override
     {
-        juce::Rectangle<int> area (getLocalBounds().reduced (28));
-        title.setBounds (area.removeFromTop (28));
-        version.setBounds (area.removeFromTop (24));
-        credit.setBounds (area.removeFromTop (22));
+        title.setBounds (0, 128, getWidth(), 38);
+        version.setBounds (0, 172, getWidth(), 26);
+        credit.setBounds (24, 222, getWidth() - 48, 60);
     }
 
 private:
     Label title, version, credit;
 };
 
-class StatusDotComponent : public Component
-{
-public:
-    void paint (Graphics& g) override
-    {
-        g.setColour (Colour (0xff1F9D55));
-        g.fillEllipse (getLocalBounds().toFloat().reduced (1.0f));
-    }
-};
+#include "PluginLibraryView.h"
 
 class IconMenu::PluginManagementComponent : public Component,
 	public DragAndDropContainer, public DragAndDropTarget,
-	private ListBoxModel, private Button::Listener
+	private ListBoxModel, private ChangeListener
 {
 public:
 	PluginManagementComponent(IconMenu& owner_)
-		: owner(owner_), activePlugins("Active Plugins", this),
-		  addButton("+ Add to Active Plugins"),
+		: owner(owner_), activePlugins("Signal chain", this),
+		  library(owner_.knownPluginList, owner_.activePluginList),
 		  hoveredRow(-1), hoveredAction(noActivePluginAction), dragTargetIndex(-1)
 	{
-		activeGroup.setText("Active Plugins");
-		availableGroup.setText("Available Plugins");
-		addAndMakeVisible(activeGroup);
-		addAndMakeVisible(availableGroup);
-		bypassHeading.setText("Bypass", dontSendNotification);
-		bypassHeading.setJustificationType(Justification::centred);
-		bypassHeading.setFont(Font(12.0f, Font::bold));
-		bypassHeading.setTooltip("Check a plugin to bypass it");
-		addAndMakeVisible(bypassHeading);
-
-		activePlugins.setRowHeight(34);
+		activePlugins.setRowHeight(HostDesign::effectRowHeight);
+		activePlugins.setOutlineThickness(0);
+		activePlugins.setColour(ListBox::backgroundColourId, HostDesign::canvas);
+		activePlugins.setMultipleSelectionEnabled(false);
+		activePlugins.onKeyPress = [this] (const KeyPress& key) { return handleChainKey(key); };
 		addAndMakeVisible(activePlugins);
 		activePlugins.addMouseListener(this, true);
 
-		const File deadMansPedalFile(getAppProperties().getUserSettings()
-			->getFile().getSiblingFile("RecentlyCrashedPluginsList"));
-		availablePlugins = new PluginListComponent(owner.formatManager,
-			owner.knownPluginList, deadMansPedalFile,
-			getAppProperties().getUserSettings());
-		availablePlugins->setOptionsButtonText("Options...");
-		addAndMakeVisible(availablePlugins);
-		availablePlugins->getTableListBox().addMouseListener(this, true);
+		addAndMakeVisible(library);
+		library.onAddPlugin = [this] (const PluginDescription& plugin)
+		{
+			owner.addPluginToActiveList(plugin);
+			refreshActivePlugins();
+		};
+		library.configureScanning(owner.formatManager, *getAppProperties().getUserSettings());
+		owner.deviceManager.addChangeListener(this);
 
 		activeEmptyState.setText(
-			"No active plugins. Add one from Available Plugins.",
+			"Your signal chain starts here.\nAdd an effect from the plugin library.",
 			dontSendNotification);
 		activeEmptyState.setJustificationType(Justification::centred);
-		activeEmptyState.setColour(Label::textColourId, Colours::darkgrey);
+		activeEmptyState.setColour(Label::textColourId, HostDesign::secondary);
+		activeEmptyState.setFont(HostDesign::bodyFont(15.0f));
 		activeEmptyState.setInterceptsMouseClicks(false, false);
 		addAndMakeVisible(activeEmptyState);
 
-		addAndMakeVisible(addButton);
-		addButton.addListener(this);
-
 		refreshActivePlugins();
-		setSize(1000, 600);
 	}
+
+	~PluginManagementComponent() override
+	{
+		owner.deviceManager.removeChangeListener(this);
+		activePlugins.setModel(nullptr);
+	}
+
+	void focusLibrary() { library.focusSearch(); }
 
 	void refreshActivePlugins()
 	{
 		activePluginRows = owner.getOrderedActivePlugins();
 		activePlugins.updateContent();
 		activeEmptyState.setVisible(owner.activePluginList.getNumTypes() == 0);
-		updateAddButton();
+		library.refresh();
+		resized();
 		activePlugins.repaint();
+		repaint();
 	}
 
 	void mouseUp(const MouseEvent&) override
 	{
 		dragHandleRow = -1;
-		updateAddButton();
 	}
 
 	void mouseDown(const MouseEvent& event) override
@@ -909,113 +638,136 @@ public:
 
 	void resized() override
 	{
-		juce::Rectangle<int> contentBounds(getLocalBounds().reduced(10));
-		const int gap = 12;
-		const int activeWidth = (contentBounds.getWidth() - gap) * 2 / 5;
-		juce::Rectangle<int> activeArea = contentBounds.removeFromLeft(activeWidth);
-		contentBounds.removeFromLeft(gap);
-		juce::Rectangle<int> availableArea = contentBounds;
+		if (getWidth() <= 0 || getHeight() <= 0) return;
+		const int gap = 48;
+		const int chainWidth = (getWidth() - gap) * 58 / 100;
+		const int availableHeight = jmax(HostDesign::effectRowHeight, getHeight() - 184);
+		const int rowsHeight = activePluginRows.empty() ? jmin(160, availableHeight)
+			: jmin((int) activePluginRows.size() * HostDesign::effectRowHeight, availableHeight);
+		inputBounds = juce::Rectangle<int>(40, 0, chainWidth - 44, 56);
+		activePlugins.setBounds(0, 72, chainWidth, rowsHeight);
+		activeEmptyState.setBounds(activePlugins.getBounds().withTrimmedLeft(40));
+		outputBounds = inputBounds.withY(activePlugins.getBottom() + 12);
+		library.setBounds(chainWidth + gap, 0, getWidth() - chainWidth - gap, getHeight());
+	}
 
-		activeGroup.setBounds(activeArea);
-		availableGroup.setBounds(availableArea);
+	void paint(Graphics& g) override
+	{
+		g.setColour(HostDesign::border);
+		g.drawVerticalLine(library.getX() - 24, 0, (float) getHeight());
+		g.drawVerticalLine(60, (float) inputBounds.getBottom(), (float) outputBounds.getY());
+		paintEndpoint(g, inputBounds, true);
+		paintEndpoint(g, outputBounds, false);
+		g.setColour(HostDesign::secondary);
+		g.setFont(HostDesign::bodyFont(15.0f));
+		g.drawFittedText("Drag to reorder / Double-click or Enter to edit\nSpace to bypass / Ctrl+Up or Ctrl+Down to reorder",
+			0, getHeight() - 34, activePlugins.getWidth(), 34, Justification::centredLeft, 2);
+	}
 
-		activeArea = activeArea.reduced(10);
-		availableArea = availableArea.reduced(10);
-		activeArea.removeFromTop(16);
-		availableArea.removeFromTop(16);
-
-		activePlugins.setBounds(activeArea);
-		activeEmptyState.setBounds(activeArea);
-		bypassHeading.setBounds(activePlugins.getRight() - 61,
-			activeGroup.getY(), 44, 16);
-
-		addButton.setBounds(availableArea.removeFromBottom(44));
-		availableArea.removeFromBottom(4);
-		availablePlugins->setBounds(availableArea);
-
+	bool handleChainKey(const KeyPress& key)
+	{
+		const int row = activePlugins.getSelectedRow();
+		if (!isPositiveAndBelow(row, (int) activePluginRows.size())) return false;
+		if (key.getKeyCode() == KeyPress::spaceKey)
+		{
+			owner.performPluginAction(owner.INDEX_BYPASS + row);
+			return true;
+		}
+		if (key.getKeyCode() == KeyPress::F2Key) { renamePlugin(row); return true; }
+		if (key.getModifiers().isCtrlDown()
+			&& (key.getKeyCode() == KeyPress::upKey || key.getKeyCode() == KeyPress::downKey))
+		{
+			const int target = jlimit(0, (int) activePluginRows.size() - 1,
+				row + (key.getKeyCode() == KeyPress::upKey ? -1 : 1));
+			owner.moveActivePlugin(row, target);
+			activePlugins.selectRow(target);
+			return true;
+		}
+		return false;
 	}
 
 private:
+	void changeListenerCallback(ChangeBroadcaster*) override { repaint(); }
+
+	void paintEndpoint(Graphics& g, juce::Rectangle<int> endpointBounds, bool isInput)
+	{
+		HostDesign::drawPanel(g, endpointBounds);
+		HostDesign::drawSymbol(g, isInput ? HostDesign::input : HostDesign::output,
+			juce::Rectangle<float>((float) endpointBounds.getX() + 14, (float) endpointBounds.getY() + 17, 22, 22), HostDesign::secondary);
+		AudioDeviceManager::AudioDeviceSetup setup;
+		owner.deviceManager.getAudioDeviceSetup(setup);
+		const String name = isInput ? setup.inputDeviceName : setup.outputDeviceName;
+		const BigInteger channels = isInput ? setup.inputChannels : setup.outputChannels;
+		StringArray channelNames;
+		for (int bit = channels.findNextSetBit(0); bit >= 0; bit = channels.findNextSetBit(bit + 1))
+			channelNames.add(String(bit + 1));
+		const int textLeft = endpointBounds.getX() + 52, width = endpointBounds.getWidth() - 62;
+		g.setColour(HostDesign::secondary);
+		g.setFont(Font(12.0f, Font::bold));
+		g.drawText(isInput ? "INPUT" : "OUTPUT", textLeft, endpointBounds.getY() + 2, width, 15, Justification::centredLeft);
+		g.setColour(HostDesign::text);
+		g.setFont(Font(15.5f, Font::bold));
+		g.drawText(name.isEmpty() ? "No device selected" : name, textLeft, endpointBounds.getY() + 17, width, 21, Justification::centredLeft);
+		g.setColour(HostDesign::secondary);
+		g.setFont(HostDesign::bodyFont(15.0f));
+		g.drawText(channelNames.isEmpty() ? "No active channels" : "Channels " + channelNames.joinIntoString(", "),
+			textLeft, endpointBounds.getY() + 36, width, 18, Justification::centredLeft);
+	}
+
+	void returnKeyPressed(int row) override { owner.performPluginAction(owner.INDEX_EDIT + row); }
 	int getNumRows() override
 	{
 		return (int) activePluginRows.size();
 	}
 
-	void paintListBoxItem(int row, Graphics& graphics, int width, int height,
-		bool rowIsSelected) override
+	void paintListBoxItem(int row, Graphics& g, int width, int height, bool selected) override
 	{
-		if (row < 0 || row >= (int) activePluginRows.size())
-			return;
-
-		if (rowIsSelected)
-			graphics.fillAll(findColour(TextEditor::highlightColourId));
-		else if (row == hoveredRow)
-			graphics.fillAll(findColour(TextEditor::highlightColourId).withAlpha(0.2f));
-		else
-			graphics.fillAll(findColour(ListBox::backgroundColourId));
-
-		const std::vector<PluginDescription>& plugins = activePluginRows;
-		const String displayName = getDisplayNameForPlugin (plugins[row]);
-		String name = String(row + 1) + ". " + displayName;
-		const bool bypassed = getAppProperties().getUserSettings()->getBoolValue(
-			IconMenu::getKey("bypass", plugins[row]), false);
-		graphics.setColour(findColour(rowIsSelected
-			? TextEditor::highlightedTextColourId : ListBox::textColourId));
-
-		const int gripWidth = 28;
-		graphics.setColour (Colour (0xffA8A4B8));
+		if (!isPositiveAndBelow(row, (int) activePluginRows.size())) return;
+		const auto& plugin = activePluginRows[row];
+		const bool bypassed = getAppProperties().getUserSettings()->getBoolValue(IconMenu::getKey("bypass", plugin));
+		const bool available = isPositiveAndBelow(row, (int) owner.loadedPlugins.size())
+			&& owner.graph.getNodeForId(owner.loadedPlugins[row].nodeId) != nullptr;
+		g.fillAll(HostDesign::canvas);
+		g.setColour(HostDesign::border);
+		g.drawVerticalLine(60, 0, (float) height);
+		const juce::Rectangle<float> card(40, 6, (float) width - 44, (float) height - 12);
+		g.setColour(selected ? HostDesign::selection : row == hoveredRow ? HostDesign::surface : HostDesign::canvas);
+		g.fillRoundedRectangle(card, 10);
+		g.setColour(selected ? HostDesign::accent : HostDesign::border);
+		g.drawRoundedRectangle(card.reduced(0.5f), 10, 1);
+		g.setColour(HostDesign::secondary);
+		g.setFont(HostDesign::bodyFont(15.0f));
+		g.drawText(String(row + 1).paddedLeft('0', 2), 0, 0, 28, height, Justification::centredLeft);
 		for (int dotRow = 0; dotRow < 3; ++dotRow)
 			for (int dotColumn = 0; dotColumn < 2; ++dotColumn)
-				graphics.fillEllipse (8.0f + dotColumn * 4.0f,
-					height * 0.5f - 5.0f + dotRow * 5.0f, 2.0f, 2.0f);
-
-		graphics.setColour(findColour(rowIsSelected
-			? TextEditor::highlightedTextColourId : ListBox::textColourId));
-		graphics.drawText(name, gripWidth, 0, width - gripWidth - 80, height,
-			Justification::centredLeft);
-
-		const juce::Rectangle<int> bypassBounds = getBypassBounds(width, height);
-		graphics.setColour(bypassed ? Colour (0xff5B45D6) : Colours::white);
-		graphics.fillRoundedRectangle(bypassBounds.toFloat(), 4.0f);
-		graphics.setColour(bypassed ? Colour (0xff5B45D6)
-			: Colour (0xff8F8AA8));
-		graphics.drawRoundedRectangle(bypassBounds.toFloat(), 4.0f, 1.5f);
-		if (bypassed)
+				g.fillEllipse(53.0f + dotColumn * 4, height * 0.5f - 6 + dotRow * 5, 2, 2);
+		HostDesign::drawSymbol(g, HostDesign::effect, juce::Rectangle<float>(76, height * 0.5f - 12, 24, 24),
+			available ? HostDesign::secondary : HostDesign::warning);
+		g.setColour(bypassed ? HostDesign::secondary : HostDesign::text);
+		g.setFont(Font(17.0f, Font::bold));
+		g.drawText(getDisplayNameForPlugin(plugin), 114, 9, width - 208, 22, Justification::centredLeft);
+		g.setColour(available ? HostDesign::secondary : HostDesign::warning);
+		g.setFont(HostDesign::bodyFont(15.0f));
+		g.drawText(plugin.pluginFormatName + " / " + HostDesign::effectStatus(available, bypassed),
+			114, 32, width - 208, 20, Justification::centredLeft);
+		const auto powerBounds = getBypassBounds(width, height).toFloat();
+		g.setColour(HostDesign::powerColour(available, bypassed));
+		g.fillRoundedRectangle(powerBounds, 7);
+		HostDesign::drawSymbol(g, HostDesign::power, powerBounds.reduced(6), Colours::white);
+		const auto menuBounds = getMenuBounds(width, height).toFloat();
+		if (row == hoveredRow && hoveredAction == menuActivePluginAction)
 		{
-			graphics.setColour(Colours::white);
-			graphics.drawLine((float) bypassBounds.getX() + 3.0f,
-				(float) bypassBounds.getY() + bypassBounds.getHeight() * 0.55f,
-				(float) bypassBounds.getX() + bypassBounds.getWidth() * 0.42f,
-				(float) bypassBounds.getBottom() - 4.0f, 2.0f);
-			graphics.drawLine((float) bypassBounds.getX() + bypassBounds.getWidth() * 0.42f,
-				(float) bypassBounds.getBottom() - 4.0f,
-				(float) bypassBounds.getRight() - 3.0f,
-				(float) bypassBounds.getY() + 4.0f, 2.0f);
+			g.setColour(Colour(0xffE8EBEF));
+			g.fillRoundedRectangle(menuBounds, 7);
 		}
-
-		if (hoveredRow == row)
+		HostDesign::drawSymbol(g, HostDesign::more, menuBounds.reduced(5), HostDesign::secondary);
+		if (dragTargetIndex == row || (row == (int) activePluginRows.size() - 1
+			&& dragTargetIndex == (int) activePluginRows.size()))
 		{
-			const juce::Rectangle<int> menuBounds = getMenuBounds (width, height);
-			if (hoveredAction == menuActivePluginAction)
-			{
-				graphics.setColour (Colour (0xffDCD6F4));
-				graphics.fillEllipse (menuBounds.toFloat().expanded (3.0f));
-			}
-			graphics.setColour (Colour (0xff6B6880));
-			for (int dot = 0; dot < 3; ++dot)
-				graphics.fillEllipse (menuBounds.getCentreX() - 1.5f,
-					menuBounds.getY() + 2.0f + dot * 5.0f, 3.0f, 3.0f);
-		}
-
-		if (dragTargetIndex == row
-			|| (row == owner.activePluginList.getNumTypes() - 1
-				&& dragTargetIndex == owner.activePluginList.getNumTypes()))
-		{
-			graphics.setColour(Colours::deepskyblue);
-			graphics.fillRect(0, dragTargetIndex == row ? 0 : height - 2, width, 2);
+			g.setColour(HostDesign::accent);
+			g.fillRect(40, dragTargetIndex == row ? 0 : height - 2, width - 44, 2);
 		}
 	}
-
 	void listBoxItemClicked(int row, const MouseEvent& event) override
 	{
 		if (event.getNumberOfClicks() > 1)
@@ -1057,7 +809,7 @@ private:
 
 	void confirmRemovePlugin(int row)
 	{
-		const std::vector<PluginDescription> plugins = owner.getOrderedActivePlugins();
+		const std::vector<PluginInstance> plugins = owner.getOrderedActivePlugins();
 		if (row < 0 || row >= (int) plugins.size())
 			return;
 
@@ -1076,30 +828,36 @@ private:
 		if (row < 0 || row >= owner.activePluginList.getNumTypes())
 			return;
 
-		const Point<int> localPosition = getLocalPoint (nullptr, screenPosition);
-		const juce::Rectangle<int> menuAnchor (
-			localPosition.x, localPosition.y, 1, 1);
-		PluginActionMenuContent* content = new PluginActionMenuContent(
-			[this, row](int action)
+		const String identity = IconMenu::getKey("order", activePluginRows[row]);
+		PopupMenu actions;
+		actions.addItem(1, "Rename");
+		actions.addSeparator();
+		actions.addColouredItem(2, "Remove", HostDesign::danger);
+		Component::SafePointer<PluginManagementComponent> safe(this);
+		actions.showMenuAsync(PopupMenu::Options()
+			.withTargetScreenArea(juce::Rectangle<int>(screenPosition.x, screenPosition.y, 1, 1))
+			.withMinimumWidth(160), ModalCallbackFunction::create([safe, identity](int action) mutable
 			{
+				if (safe == nullptr || action == 0) return;
+				const auto current = safe->owner.getOrderedActivePlugins();
+				int row = -1;
+				for (int i = 0; i < (int) current.size(); ++i)
+					if (identity == IconMenu::getKey("order", current[i])) { row = i; break; }
+				if (row < 0) return;
 				if (action == 1)
-					renamePlugin(row);
+					safe->renamePlugin(row);
 				else if (action == 2)
-					confirmRemovePlugin(row);
-			});
-		CallOutBox& callout = CallOutBox::launchAsynchronously(
-			content, menuAnchor, this);
-		callout.setLookAndFeel(&pluginActionMenuLookAndFeel);
-		callout.setArrowSize(0.0f);
+					safe->confirmRemovePlugin(row);
+			}));
 	}
 
 	void renamePlugin (int row)
 	{
-		const std::vector<PluginDescription> plugins = owner.getOrderedActivePlugins();
+		const std::vector<PluginInstance> plugins = owner.getOrderedActivePlugins();
 		if (row < 0 || row >= (int) plugins.size())
 			return;
 
-		const PluginDescription& plugin = plugins[row];
+		const PluginInstance& plugin = plugins[row];
 		AlertWindow renameDialog ("Rename plugin", "Choose a display name for this plugin.",
 			AlertWindow::NoIcon, this);
 		renameDialog.addTextEditor ("name", getDisplayNameForPlugin (plugin), "Name:");
@@ -1119,6 +877,9 @@ private:
 		else
 			settings->setValue (key, newName);
 		settings->saveIfNeeded();
+		for (const auto& loaded : owner.loadedPlugins)
+			if (loaded.description.instanceId == plugin.instanceId)
+				PluginWindow::setTitleFor(owner.graph.getNodeForId(loaded.nodeId), getDisplayNameForPlugin(plugin));
 		activePlugins.repaint();
 	}
 
@@ -1132,46 +893,13 @@ private:
 			owner.performPluginAction(owner.INDEX_EDIT + row);
 	}
 
-	String getTooltipForRow(int row) override
-	{
-		if (row != hoveredRow)
-			return String();
-
-		if (hoveredAction == bypassActivePluginAction)
-		{
-			const std::vector<PluginDescription> plugins = owner.getOrderedActivePlugins();
-			if (row >= 0 && row < (int) plugins.size()
-				&& getAppProperties().getUserSettings()->getBoolValue(
-					IconMenu::getKey("bypass", plugins[row])))
-				return "Enable this plugin";
-			return "Bypass this plugin";
-		}
-
-		return String();
-	}
-
-	void buttonClicked(Button* button) override
-	{
-		if (button == &addButton)
-		{
-			const int row = availablePlugins->getTableListBox().getSelectedRow();
-			if (row >= 0 && row < owner.knownPluginList.getNumTypes())
-			{
-				owner.addPluginToActiveList(*owner.knownPluginList.getType(row));
-				refreshActivePlugins();
-			}
-			return;
-		}
-
-	}
-
 	var getDragSourceDescription(const SparseSet<int>& rowsToDescribe) override
 	{
 		if (rowsToDescribe.size() != 1 || dragHandleRow != rowsToDescribe[0])
 			return var();
 
 		const int row = rowsToDescribe[0];
-		const std::vector<PluginDescription> plugins = owner.getOrderedActivePlugins();
+		const std::vector<PluginInstance> plugins = owner.getOrderedActivePlugins();
 		if (row < 0 || row >= (int) plugins.size())
 			return var();
 
@@ -1210,7 +938,7 @@ private:
 
 		const String pluginOrderKey = description.substring(
 			String(activePluginDragPrefix).length());
-		const std::vector<PluginDescription> plugins = owner.getOrderedActivePlugins();
+		const std::vector<PluginInstance> plugins = owner.getOrderedActivePlugins();
 		int fromIndex = -1;
 		for (int i = 0; i < (int) plugins.size(); ++i)
 			if (pluginOrderKey == IconMenu::getKey("order", plugins[i]))
@@ -1233,12 +961,6 @@ private:
 		}
 
 		setDragTargetIndex(-1);
-	}
-
-	void updateAddButton()
-	{
-		const int row = availablePlugins->getTableListBox().getSelectedRow();
-		addButton.setEnabled(row >= 0 && row < owner.knownPluginList.getNumTypes());
 	}
 
 	void updateActiveHover(const MouseEvent& event)
@@ -1267,17 +989,17 @@ private:
 
 	juce::Rectangle<int> getBypassBounds(int width, int height) const
 	{
-		return juce::Rectangle<int>(width - 48, (height - 18) / 2, 18, 18);
+		return juce::Rectangle<int>(width - 82, (height - 32) / 2, 32, 32);
 	}
 
 	juce::Rectangle<int> getMenuBounds (int width, int height) const
 	{
-		return juce::Rectangle<int> (width - 20, (height - 18) / 2, 12, 18);
+		return juce::Rectangle<int> (width - 42, (height - 32) / 2, 32, 32);
 	}
 
 	bool isDragHandlePosition (Point<int> position) const
 	{
-		return position.x >= 0 && position.x < 28
+		return position.x >= 40 && position.x < 72
 			&& activePlugins.getRowContainingPosition (position.x, position.y) >= 0;
 	}
 
@@ -1295,12 +1017,12 @@ private:
 		return noActivePluginAction;
 	}
 
-	String getDisplayNameKey (const PluginDescription& plugin) const
+	String getDisplayNameKey (const PluginInstance& plugin) const
 	{
-		return PluginState::key("display-name", plugin);
+		return plugin.settingsKey("display-name");
 	}
 
-	String getDisplayNameForPlugin (const PluginDescription& plugin) const
+	String getDisplayNameForPlugin (const PluginInstance& plugin) const
 	{
 		return getAppProperties().getUserSettings()->getValue (
 			getDisplayNameKey (plugin), plugin.name);
@@ -1338,178 +1060,32 @@ private:
 	}
 
 	IconMenu& owner;
-	GroupComponent activeGroup, availableGroup;
-	Label activeEmptyState, bypassHeading;
-	std::vector<PluginDescription> activePluginRows;
-	ListBox activePlugins;
-	TextButton addButton;
-	ScopedPointer<PluginListComponent> availablePlugins;
+	Label activeEmptyState;
+	std::vector<PluginInstance> activePluginRows;
+	HostDesign::ActionListBox activePlugins;
+	PluginLibraryView library;
+	juce::Rectangle<int> inputBounds, outputBounds;
 	int hoveredRow;
 	ActivePluginHoveredAction hoveredAction;
 	int dragTargetIndex;
 	int dragHandleRow = -1;
 };
 
-class LightHostMainWindowContent : public Component,
-    private Button::Listener
-{
-public:
-    enum ViewType
-    {
-        pluginsView,
-        settingsView,
-        aboutView
-    };
-
-    explicit LightHostMainWindowContent (IconMenu& owner_)
-        : owner (owner_)
-    {
-        setOpaque (true);
-
-        titleBar.setText ("Light Host", dontSendNotification);
-        titleBar.setFont (Font (20.0f, Font::bold));
-        titleBar.setColour (Label::textColourId, Colour (0xff1D1B2E));
-        addAndMakeVisible (titleBar);
-
-        icon.setImage (ImageFileFormat::loadFrom (BinaryData::menu_icon_png, BinaryData::menu_icon_pngSize));
-        icon.setImagePlacement (RectanglePlacement::centred);
-        icon.setInterceptsMouseClicks (false, false);
-        addAndMakeVisible (icon);
-
-        pluginsButton.setButtonText ("Plugins");
-        pluginsButton.setColour (TextButton::textColourOnId, Colour (0xff3B2AA8));
-        pluginsButton.setColour (TextButton::textColourOffId, Colour (0xff1D1B2E));
-        pluginsButton.setClickingTogglesState (true);
-        pluginsButton.setToggleState (true, dontSendNotification);
-        addAndMakeVisible (pluginsButton);
-        pluginsButton.addListener (this);
-
-        settingsButton.setButtonText ("Settings");
-        settingsButton.setColour (TextButton::textColourOnId, Colour (0xff3B2AA8));
-        settingsButton.setColour (TextButton::textColourOffId, Colour (0xff1D1B2E));
-        settingsButton.setClickingTogglesState (true);
-        addAndMakeVisible (settingsButton);
-        settingsButton.addListener (this);
-
-        aboutButton.setButtonText ("About");
-        aboutButton.setColour (TextButton::textColourOnId, Colour (0xff3B2AA8));
-        aboutButton.setColour (TextButton::textColourOffId, Colour (0xff1D1B2E));
-        aboutButton.setClickingTogglesState (true);
-        addAndMakeVisible (aboutButton);
-        aboutButton.addListener (this);
-
-        readyStatus.setText ("Ready", dontSendNotification);
-        readyStatus.setFont (Font (13.0f));
-        readyStatus.setColour (Label::textColourId, Colour (0xff6B6880));
-        addAndMakeVisible (readyStatus);
-
-        readyDot.setSize (8, 8);
-        addAndMakeVisible (readyDot);
-
-        pluginsPanel = new IconMenu::PluginManagementComponent (owner);
-        aboutPanel = new LightHostAboutView();
-
-        addAndMakeVisible (pluginsPanel);
-        addAndMakeVisible (aboutPanel);
-
-        setView (pluginsView);
-    }
-
-    void setView (ViewType newView)
-    {
-        pluginsButton.setToggleState (newView == pluginsView, dontSendNotification);
-        settingsButton.setToggleState (newView == settingsView, dontSendNotification);
-        aboutButton.setToggleState (newView == aboutView, dontSendNotification);
-
-        pluginsPanel->setVisible (newView == pluginsView);
-        if (newView == settingsView && settingsPanel == nullptr)
-        {
-            settingsPanel = new LightHostSettingsView(owner);
-            addChildComponent(settingsPanel);
-            resized();
-        }
-        if (settingsPanel != nullptr)
-            settingsPanel->setVisible(newView == settingsView);
-        aboutPanel->setVisible (newView == aboutView);
-        repaint();
-    }
-
-    void refreshActivePlugins()
-    {
-        pluginsPanel->refreshActivePlugins();
-    }
-
-    void paint (Graphics& g) override
-    {
-        g.fillAll (Colour (0xffF4F3FB));
-    }
-
-    void resized() override
-    {
-        juce::Rectangle<int> area (getLocalBounds());
-        const int headerHeight = 48;
-        const int sidebarWidth = 156;
-
-        juce::Rectangle<int> headerArea = area.removeFromTop (headerHeight);
-        icon.setBounds (headerArea.removeFromLeft (40).withTrimmedLeft (10).withTrimmedRight (10).withTrimmedTop (8).withTrimmedBottom (8));
-        titleBar.setBounds (headerArea.withTrimmedLeft (8));
-
-        juce::Rectangle<int> bodyArea (area);
-        juce::Rectangle<int> sidebarArea = bodyArea.removeFromLeft (sidebarWidth);
-
-        sidebarArea.reduce (8, 8);
-        pluginsButton.setBounds (sidebarArea.removeFromTop (46));
-        settingsButton.setBounds (sidebarArea.removeFromTop (46));
-        aboutButton.setBounds (sidebarArea.removeFromTop (46));
-
-        sidebarArea.removeFromTop (12);
-        juce::Rectangle<int> statusArea = sidebarArea.removeFromBottom (22);
-        readyDot.setBounds (statusArea.removeFromLeft (10).withTrimmedLeft (1).withTrimmedRight (1).withTrimmedTop (6).withTrimmedBottom (6));
-        readyStatus.setBounds (statusArea);
-
-        const juce::Rectangle<int> contentArea (bodyArea.reduced (12, 12));
-        pluginsPanel->setBounds (contentArea);
-        if (settingsPanel != nullptr)
-            settingsPanel->setBounds (contentArea);
-        aboutPanel->setBounds (contentArea);
-    }
-
-    void buttonClicked (Button* button) override
-    {
-        if (button == &pluginsButton)
-            setView (pluginsView);
-        else if (button == &settingsButton)
-            setView (settingsView);
-        else if (button == &aboutButton)
-            setView (aboutView);
-    }
-
-private:
-    IconMenu& owner;
-    ImageComponent icon;
-    Label titleBar;
-    TextButton pluginsButton, settingsButton, aboutButton;
-    Label readyStatus;
-    StatusDotComponent readyDot;
-    ScopedPointer<IconMenu::PluginManagementComponent> pluginsPanel;
-    ScopedPointer<Component> settingsPanel;
-    ScopedPointer<Component> aboutPanel;
-};
+#include "HostWindowContent.h"
 
 class IconMenu::PluginListWindow : public DocumentWindow
 {
 public:
 	explicit PluginListWindow(IconMenu& owner_)
 		: DocumentWindow("Light Host", Colours::white,
-			DocumentWindow::minimiseButton | DocumentWindow::closeButton),
+			DocumentWindow::allButtons),
 		content(new LightHostMainWindowContent(owner_))
 	{
 		setContentOwned(content, true);
 		setUsingNativeTitleBar(true);
-		setResizable(true, true);
-		setResizeLimits(1000, 520, 1400, 1000);
-		setTopLeftPosition(60, 60);
-		setSize(1000, 520);
+		setResizable(true, false);
+		setResizeLimits(1000, 660, 10000, 10000);
+		centreWithSize(1180, 780);
 		setVisible(true);
 	}
 
@@ -1526,6 +1102,11 @@ public:
 		setVisible(true);
 		toFront(true);
 	}
+
+    void refreshStartupState()
+    {
+        if (content != nullptr) content->refreshStartupState();
+    }
 
 	void closeButtonPressed()
 	{
@@ -1569,10 +1150,10 @@ IconMenu::IconMenu() : INDEX_EDIT(1000000), INDEX_BYPASS(2000000), INDEX_DELETE(
         activePluginList.recreateFromXml(*savedPluginListActive);
     PluginState::migrateLegacySettings(*getAppProperties().getUserSettings(),
         PluginState::collectPlugins(knownPluginList, activePluginList));
+    activePluginList.migrateLegacySettings(*getAppProperties().getUserSettings());
     loadActivePlugins();
     activePluginList.addChangeListener(this);
 	setIcon();
-	setIconTooltip(JUCEApplication::getInstance()->getApplicationName());
 };
 
 IconMenu::~IconMenu()
@@ -1641,13 +1222,13 @@ void IconMenu::syncActivePlugins(bool forceReload)
         graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioInputNode), PluginChain::inputNodeId);
         graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioOutputNode), PluginChain::outputNodeId);
     }
-	const std::vector<PluginDescription> plugins = getOrderedActivePlugins();
+	const std::vector<PluginInstance> plugins = getOrderedActivePlugins();
 	StringArray loadingErrors;
     for (const auto& loaded : loadedPlugins)
     {
-        const bool retained = std::any_of(plugins.begin(), plugins.end(), [&](const PluginDescription& plugin)
+        const bool retained = std::any_of(plugins.begin(), plugins.end(), [&](const PluginInstance& plugin)
         {
-            return loaded.description.isDuplicateOf(plugin)
+            return loaded.description.instanceId == plugin.instanceId && loaded.description.isDuplicateOf(plugin)
                 && loaded.description.pluginFormatName == plugin.pluginFormatName;
         });
         if (!retained)
@@ -1661,10 +1242,10 @@ void IconMenu::syncActivePlugins(bool forceReload)
     nextLoaded.reserve(plugins.size());
     for (int i = 1; i <= (int) plugins.size(); i++)
     {
-        const PluginDescription& plugin = plugins[i - 1];
+        const PluginInstance& plugin = plugins[i - 1];
         const auto existing = std::find_if(loadedPlugins.begin(), loadedPlugins.end(), [&](const LoadedPlugin& loaded)
         {
-            return loaded.description.isDuplicateOf(plugin)
+            return loaded.description.instanceId == plugin.instanceId && loaded.description.isDuplicateOf(plugin)
                 && loaded.description.pluginFormatName == plugin.pluginFormatName;
         });
         if (existing != loadedPlugins.end() && graph.getNodeForId(existing->nodeId) != nullptr)
@@ -1716,6 +1297,8 @@ void IconMenu::syncActivePlugins(bool forceReload)
         AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Plugins skipped",
             loadingErrors.joinIntoString("\n") + "\nAudio continues through the remaining plugins.");
     }
+    if (pluginListWindow != nullptr)
+        pluginListWindow->refreshActivePlugins();
 }
 
 void IconMenu::restartAudio()
@@ -1753,6 +1336,7 @@ void IconMenu::updatePluginConnections()
 
 void IconMenu::changeListenerCallback(ChangeBroadcaster* changed)
 {
+    if (settingsImported) return;
     if (changed == &knownPluginList)
     {
         ScopedPointer<XmlElement> savedPluginList (knownPluginList.createXml());
@@ -1793,19 +1377,23 @@ void IconMenu::timerCallback()
 {
     stopTimer();
     menu.clear();
-	menu.setLookAndFeel(&trayMenuLookAndFeel);
     menu.addSectionHeader(JUCEApplication::getInstance()->getApplicationName());
     menu.addItem(menuOpenLightHost, "Open Light Host");
 #if JUCE_WINDOWS
     bool runOnStartup = false;
-    getRunOnStartupEnabled(runOnStartup);
-    menu.addItem(menuRunOnStartup, "Run on startup", true, runOnStartup);
+    const bool startupAvailable = getRunOnStartupEnabled(runOnStartup);
+    PopupMenu::Item startupItem;
+    startupItem.itemID = menuRunOnStartup;
+    startupItem.text = "Run on startup";
+    startupItem.isEnabled = startupAvailable;
+    startupItem.customComponent = new HostDesign::SwitchMenuItem(startupItem.text, runOnStartup);
+    menu.addItem(startupItem);
 #endif
     menu.addSeparator();
-    menu.addColouredItem(menuQuit, "Quit", Colour(0xffC42B2B));
+    menu.addColouredItem(menuQuit, "Quit", HostDesign::danger);
 	#if JUCE_MAC || JUCE_LINUX
     menu.showMenuAsync(PopupMenu::Options().withTargetComponent(this)
-		.withMinimumWidth(240).withStandardItemHeight(36),
+		.withMinimumWidth(240).withStandardItemHeight(HostDesign::menuRowHeight),
 		ModalCallbackFunction::forComponent(menuInvocationCallback, this));
 	#else
 	if (x == 0 || y == 0)
@@ -1819,7 +1407,7 @@ void IconMenu::timerCallback()
 	}
 	juce::Rectangle<int> rect(x, y, 1, 1);
 	menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea(rect)
-		.withMinimumWidth(240).withStandardItemHeight(36),
+		.withMinimumWidth(240).withStandardItemHeight(HostDesign::menuRowHeight),
 		ModalCallbackFunction::forComponent(menuInvocationCallback, this));
 	#endif
 }
@@ -1887,6 +1475,7 @@ void IconMenu::menuInvocationCallback(int id, IconMenu* im)
 #if JUCE_WINDOWS
     case menuRunOnStartup:
         toggleRunOnStartup();
+        if (im->pluginListWindow != nullptr) im->pluginListWindow->refreshStartupState();
         break;
 #endif
     case menuQuit:
@@ -1899,45 +1488,14 @@ void IconMenu::menuInvocationCallback(int id, IconMenu* im)
 
 void IconMenu::addPluginToActiveList(const PluginDescription& plugin)
 {
-    // Also migrate settings for plugins rediscovered since startup.
-    PluginState::migrateLegacySettings(*getAppProperties().getUserSettings(),
-        PluginState::collectPlugins(knownPluginList, activePluginList));
-
-	int order = (int) time(0);
-	for (int i = 0; i < activePluginList.getNumTypes(); ++i)
-	{
-		const int currentOrder = getAppProperties().getUserSettings()
-			->getValue(getKey("order", *activePluginList.getType(i))).getIntValue();
-		if (currentOrder >= order)
-			order = currentOrder + 1;
-	}
-
-	getAppProperties().getUserSettings()->setValue(getKey("order", plugin), order);
-	activePluginList.addType(plugin);
-	syncActivePlugins(false);
-	if (pluginListWindow != nullptr)
-		pluginListWindow->refreshActivePlugins();
+    activePluginList.addInstance(plugin, *getAppProperties().getUserSettings());
+    syncActivePlugins(false);
 }
 
 void IconMenu::moveActivePlugin(int fromIndex, int toIndex)
 {
-	std::vector<PluginDescription> plugins = getOrderedActivePlugins();
-	if (fromIndex < 0 || fromIndex >= (int) plugins.size()
-		|| toIndex < 0 || toIndex >= (int) plugins.size()
-		|| fromIndex == toIndex)
-		return;
-
-	const PluginDescription plugin = plugins[fromIndex];
-	plugins.erase(plugins.begin() + fromIndex);
-	plugins.insert(plugins.begin() + toIndex, plugin);
-
-	PropertiesFile* settings = getAppProperties().getUserSettings();
-	for (int i = 0; i < (int) plugins.size(); ++i)
-		settings->setValue(getKey("order", plugins[i]), i + 1);
-
-	syncActivePlugins(false);
-	if (pluginListWindow != nullptr)
-		pluginListWindow->refreshActivePlugins();
+    activePluginList.move(fromIndex, toIndex, *getAppProperties().getUserSettings());
+    syncActivePlugins(false);
 }
 
 void IconMenu::performPluginAction(int id)
@@ -1945,34 +1503,18 @@ void IconMenu::performPluginAction(int id)
 	if (id >= INDEX_DELETE && id < INDEX_DELETE + 1000000)
 	{
 		const int index = id - INDEX_DELETE;
-		std::vector<PluginDescription> plugins = getOrderedActivePlugins();
+		std::vector<PluginInstance> plugins = getOrderedActivePlugins();
 		if (index < 0 || index >= (int) plugins.size())
 			return;
 
-		const PluginDescription plugin = plugins[index];
-		const String orderKey = getKey("order", plugin);
-		int unsortedIndex = -1;
-		for (int i = 0; i < activePluginList.getNumTypes(); ++i)
-			if (plugin.isDuplicateOf(*activePluginList.getType(i)))
-			{
-				unsortedIndex = i;
-				break;
-			}
-
-		if (unsortedIndex < 0)
-			return;
-
-		PropertiesFile* settings = getAppProperties().getUserSettings();
-		settings->removeValue(orderKey);
-		settings->removeValue(getKey("bypass", plugin));
-		settings->removeValue(getKey("state", plugin));
-		activePluginList.removeType(unsortedIndex);
-		syncActivePlugins(false);
+		const PluginInstance plugin = plugins[index];
+		activePluginList.removeInstance(plugin.instanceId, *getAppProperties().getUserSettings());
+        syncActivePlugins(false);
 	}
 	else if (id >= INDEX_BYPASS && id < INDEX_BYPASS + 1000000)
 	{
 		const int index = id - INDEX_BYPASS;
-		std::vector<PluginDescription> plugins = getOrderedActivePlugins();
+		std::vector<PluginInstance> plugins = getOrderedActivePlugins();
 		if (index < 0 || index >= (int) plugins.size())
 			return;
 
@@ -1989,6 +1531,7 @@ void IconMenu::performPluginAction(int id)
 		if (const AudioProcessorGraph::Node::Ptr node = graph.getNodeForId(loadedPlugins[index].nodeId))
 			if (PluginWindow* const window = PluginWindow::getWindowFor(node, PluginWindow::Normal))
 			{
+                window->setName(loadedPlugins[index].description.displayName(*getAppProperties().getUserSettings()));
                 window->setVisible(true);
 				window->toFront(true);
 			}
@@ -1998,29 +1541,9 @@ void IconMenu::performPluginAction(int id)
 		pluginListWindow->refreshActivePlugins();
 }
 
-std::vector<PluginDescription> IconMenu::getOrderedActivePlugins()
+std::vector<PluginInstance> IconMenu::getOrderedActivePlugins()
 {
-    struct OrderedPlugin
-    {
-        PluginDescription plugin;
-        int order;
-    };
-    std::vector<OrderedPlugin> ordered;
-    ordered.reserve(activePluginList.getNumTypes());
-    PropertiesFile* settings = getAppProperties().getUserSettings();
-    for (int i = 0; i < activePluginList.getNumTypes(); ++i)
-    {
-        const PluginDescription& plugin = *activePluginList.getType(i);
-        ordered.push_back({ plugin, settings->getIntValue(getKey("order", plugin)) });
-    }
-    // Keep plugins with duplicate or missing order values in their original order.
-    std::stable_sort(ordered.begin(), ordered.end(),
-        [](const OrderedPlugin& a, const OrderedPlugin& b) { return a.order < b.order; });
-    std::vector<PluginDescription> list;
-    list.reserve(ordered.size());
-    for (const auto& entry : ordered)
-        list.push_back(entry.plugin);
-    return list;
+    return activePluginList.ordered(*getAppProperties().getUserSettings());
 }
 
 String IconMenu::getKey(const String& type, const PluginDescription& plugin)
@@ -2028,9 +1551,14 @@ String IconMenu::getKey(const String& type, const PluginDescription& plugin)
     return PluginState::key(type, plugin);
 }
 
+String IconMenu::getKey(const String& type, const PluginInstance& plugin)
+{
+    return plugin.settingsKey(type);
+}
+
 void IconMenu::deletePluginStates()
 {
-	std::vector<PluginDescription> list = getOrderedActivePlugins();
+	std::vector<PluginInstance> list = getOrderedActivePlugins();
     for (int i = 0; i < activePluginList.getNumTypes(); i++)
     {
 		String pluginUid = getKey("state", list[i]);
@@ -2043,6 +1571,9 @@ void IconMenu::savePluginStates(bool flushSettings)
 {
 	if (settingsImported)
 		return;
+
+    ScopedPointer<XmlElement> activeXml(activePluginList.createXml());
+    getAppProperties().getUserSettings()->setValue("pluginListActive", activeXml);
 
     for (const auto& loaded : loadedPlugins)
     {
@@ -2096,7 +1627,7 @@ void IconMenu::exportBackup()
 	const TemporaryFile temporaryBackup(destination);
     PluginBackup::ExportTask exportTask(temporaryBackup.getFile());
 	XmlElement manifest("LIGHTHOST_BACKUP");
-	manifest.setAttribute("version", 2);
+	manifest.setAttribute("version", 3);
 	StringArray archivedPluginPaths;
 	StringArray errors;
 	int archivedPlugins = 0;
@@ -2222,7 +1753,7 @@ bool IconMenu::importBackup()
 
 	PropertySet importedSettings;
 	importedSettings.restoreFromXml(*settingsXml);
-	if (!PluginBackup::hasValidPluginLists(importedSettings))
+	if (!PluginBackup::hasValidPluginLists(importedSettings, manifest->getIntAttribute("version") >= 3))
 	{
 		AlertWindow::showMessageBox(AlertWindow::WarningIcon, "Import Backup",
 			"The backup contains invalid plugin settings. Your settings were not changed.");
@@ -2411,8 +1942,8 @@ bool IconMenu::importBackup()
 		return false;
 	}
 
-	remapPluginPaths(importedSettings, "pluginList", oldPluginPaths, newPluginPaths);
-	remapPluginPaths(importedSettings, "pluginListActive", oldPluginPaths, newPluginPaths);
+	PluginBackup::prepareImportedSettings(importedSettings, oldPluginPaths, newPluginPaths,
+		File::getSpecialLocation(File::currentExecutableFile).getParentDirectory());
 	for (int i = 0; i < localScanFormats.size(); ++i)
 		importedSettings.setValue("lastPluginScanPath_" + localScanFormats[i], localScanPaths[i]);
 

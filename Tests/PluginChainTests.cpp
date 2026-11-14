@@ -5,6 +5,11 @@
 #include "../Source/PluginState.h"
 #include "../Source/PluginBackup.h"
 #include "../Source/PluginWindow.h"
+#include "../Source/IconMenu.hpp"
+#include "../Source/HostDesign.h"
+#include "../Source/HostLookAndFeel.h"
+#include "../Source/PluginLibraryView.h"
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -435,7 +440,8 @@ void checkBackups()
             && restored.getValue("plugin-state-example") == "binary+/= data",
             "Settings values lost in XML round trip");
     require(PluginBackup::supportsVersion(1) && PluginBackup::supportsVersion(2)
-            && !PluginBackup::supportsVersion(3), "Backup version compatibility regressed");
+            && PluginBackup::supportsVersion(3) && !PluginBackup::supportsVersion(4),
+            "Backup version compatibility regressed");
     const File parent = File::getSpecialLocation(File::tempDirectory);
     const File root = parent.getNonexistentChildFile("LightHost-backup-tests", "", false);
     require(root.isAChildOf(parent) && root.createDirectory().wasOk(), "Invalid temporary test directory");
@@ -575,6 +581,465 @@ void checkSynchronizedStateCapture()
     require(entered && !processor.overlapped && state.getSize() == 5,
             "State capture overlapped processing or lost the snapshot");
 }
+
+void checkPluginLibraryActions()
+{
+    PluginDescription first;
+    first.name = "Equalizer";
+    first.manufacturerName = "First vendor";
+    first.pluginFormatName = "VST3";
+    first.fileOrIdentifier = "/plugins/first.vst3";
+    first.uid = 1;
+    PluginDescription second(first);
+    second.manufacturerName = "Second vendor";
+    second.fileOrIdentifier = "/plugins/second.vst3";
+    second.uid = 2;
+    second.category = "Fx|Dynamics";
+    second.version = "2.4.1";
+    second.descriptiveName = "Precise compression";
+    KnownPluginList known;
+    PluginInstances active;
+    known.addType(first);
+    known.addType(second);
+    PluginLibraryView library(known, active);
+    library.setSize(300, 500);
+    ListBox* list = nullptr;
+    TextEditor* search = nullptr;
+    for (int i = 0; i < library.getNumChildComponents(); ++i)
+    {
+        if (auto* child = dynamic_cast<ListBox*>(library.getChildComponent(i))) list = child;
+        if (auto* child = dynamic_cast<TextEditor*>(library.getChildComponent(i))) search = child;
+    }
+    require(list != nullptr && search != nullptr && list->getModel()->getNumRows() == 2,
+            "Plugin library did not expose its installed effects");
+    std::function<void(Component&)> checkNoTooltips = [&](Component& component)
+    {
+        if (auto* client = dynamic_cast<TooltipClient*>(&component))
+            require(client->getTooltip().isEmpty(), "A library control retained a tooltip");
+        for (int i = 0; i < component.getNumChildComponents(); ++i)
+            checkNoTooltips(*component.getChildComponent(i));
+    };
+    checkNoTooltips(library);
+    for (const char* query : { "Dynamics", "2.4.1", "Precise compression" })
+    {
+        search->setText(query, false);
+        library.refresh();
+        require(list->getModel()->getNumRows() == 1,
+                "Inline library details were not searchable");
+        require(list->getModel()->getTooltipForRow(0).isEmpty(),
+                "Plugin library still exposes hover tooltips");
+    }
+    int additions = 0;
+    String addedIdentity;
+    library.onAddPlugin = [&](const PluginDescription& plugin)
+    {
+        ++additions;
+        addedIdentity = PluginState::key("library", plugin);
+        active.addType(plugin);
+    };
+    search->setText("SECOND VENDOR", false);
+    library.refresh();
+    require(list->getModel()->getNumRows() == 1, "Library search did not match manufacturer without case sensitivity");
+    list->selectRow(0);
+    list->keyPressed(KeyPress(KeyPress::returnKey));
+    require(additions == 1 && addedIdentity == PluginState::key("library", second),
+            "Adding a filtered result selected the wrong same-name plugin");
+    list->keyPressed(KeyPress(KeyPress::returnKey));
+    require(additions == 2 && active.getNumTypes() == 2
+            && active.getType(0)->instanceId != active.getType(1)->instanceId,
+            "Library did not add independent copies of the same effect");
+    list->keyPressed(KeyPress(KeyPress::deleteKey));
+    require(known.getNumTypes() == 1 && active.getNumTypes() == 2
+            && list->getModel()->getNumRows() == 0,
+            "Removing a filtered library entry removed active copies or targeted another plugin");
+    known.addType(second);
+    library.refresh();
+    list->selectRow(0);
+    active.clear();
+    for (int i = known.getNumTypes(); --i >= 0;)
+        if (PluginState::key("library", *known.getType(i)) == PluginState::key("library", second))
+            known.removeType(i); // The displayed snapshot stays stale until its change notification arrives.
+    list->keyPressed(KeyPress(KeyPress::returnKey));
+    require(additions == 2, "A stale library row added a plugin removed by library management");
+    search->setText("no match", false);
+    library.refresh();
+    require(list->getModel()->getNumRows() == 0 && list->getSelectedRow() == -1,
+            "Search retained an actionable selection after all results disappeared");
+    search->clear();
+    library.refresh();
+    require(list->getModel()->getNumRows() == 1 && list->getSelectedRow() == -1,
+            "Clearing search redirected the old selection to another plugin");
+}
+
+void checkBypassPresentation()
+{
+    require(HostDesign::effectStatus(true, false) == "Active"
+            && HostDesign::effectStatus(true, true) == "Bypassed",
+            "Loaded effects did not expose their bypass state");
+    require(HostDesign::effectStatus(false, false) == "Unavailable"
+            && HostDesign::effectStatus(false, true) == "Bypassed / Unavailable",
+            "A missing plugin concealed its saved bypass state");
+    for (bool available : { false, true })
+        require(HostDesign::powerColour(available, false) != HostDesign::powerColour(available, true),
+                "The power control did not change appearance when bypass was toggled");
+}
+
+void checkPopupTransparency()
+{
+    LightHostLookAndFeel theme;
+    Image menuImage(Image::ARGB, 280, 180, true);
+    Graphics menuGraphics(menuImage);
+    theme.drawPopupMenuBackground(menuGraphics, menuImage.getWidth(), menuImage.getHeight());
+    for (const auto& image : { menuImage })
+    {
+        for (const auto point : { Point<int>(0, 0), Point<int>(279, 0), Point<int>(0, 179), Point<int>(279, 179) })
+            require(image.getPixelAt(point.x, point.y).getAlpha() == 0,
+                    "A popup's outer corner was painted instead of remaining transparent");
+        require(image.getPixelAt(11, 11).getAlpha() < 255
+                && image.getPixelAt(140, 90).isOpaque(),
+                "Popup rounding or its opaque interior was lost");
+        const int shadowAlpha = image.getPixelAt(140, 173).getAlpha();
+        require(shadowAlpha > 0 && shadowAlpha < 100,
+                "Popup shadow was missing or became an opaque backing rectangle");
+    }
+    const int leftGutterAlpha = menuImage.getPixelAt(4, 22).getAlpha();
+    const int rightGutterAlpha = menuImage.getPixelAt(275, 22).getAlpha();
+    theme.drawPopupMenuItem(menuGraphics, Rectangle<int>(0, 12, 280, HostDesign::menuRowHeight),
+                           false, true, true, false, true, "Sort by", String(), nullptr, nullptr);
+    require(menuImage.getPixelAt(4, 22).getAlpha() == leftGutterAlpha
+            && menuImage.getPixelAt(275, 22).getAlpha() == rightGutterAlpha,
+            "A highlighted menu row painted over the transparent shadow gutter");
+
+#if JUCE_WINDOWS
+    if (Desktop::canUseSemiTransparentWindows())
+    {
+        auto& desktop = Desktop::getInstance();
+        const int initialWindows = desktop.getNumComponents();
+        PopupMenu menu;
+        menu.setLookAndFeel(&theme);
+        menu.addItem(1, "Rename");
+        menu.addColouredItem(2, "Remove", HostDesign::danger);
+        menu.showMenuAsync(PopupMenu::Options().withTargetScreenArea(Rectangle<int>(200, 200, 1, 1)),
+                          ModalCallbackFunction::create([] (int) {}));
+        require(desktop.getNumComponents() == initialWindows + 1,
+                "Popup menu created additional backing or shadow windows");
+        Component* popup = nullptr;
+        for (int i = 0; i < desktop.getNumComponents(); ++i)
+            if (desktop.getComponent(i)->getName() == "menu") popup = desktop.getComponent(i);
+        require(popup != nullptr && !popup->isOpaque() && popup->getPeer() != nullptr
+                && (popup->getPeer()->getStyleFlags() & ComponentPeer::windowHasDropShadow) == 0,
+                "Menu retained the legacy rectangular native shadow");
+        require(popup->getNumChildComponents() > 0
+                && popup->getChildComponent(0)->getY() >= HostDesign::popupShadowMargin + 2,
+                "Menu items overlap the rounded panel's shadow margin");
+        PopupMenu::dismissAllActiveMenus();
+        MessageManager::getInstance()->runDispatchLoopUntil(20);
+        require(desktop.getNumComponents() == initialWindows,
+                "Dismissing the popup left a native backing window behind");
+
+        for (bool initiallyEnabled : { false, true })
+        {
+            bool enabled = initiallyEnabled;
+            int result = 0;
+            PopupMenu startupMenu;
+            startupMenu.setLookAndFeel(&theme);
+            auto* item = new HostDesign::SwitchMenuItem("Run on startup", enabled);
+            startupMenu.addCustomItem(3, item);
+            auto* toggle = dynamic_cast<HostDesign::Switch*>(item->getChildComponent(0));
+            require(toggle != nullptr && toggle->getToggleState() == enabled,
+                    "Tray startup item did not use the Settings switch with the current state");
+            startupMenu.showMenuAsync(PopupMenu::Options().withTargetScreenArea(Rectangle<int>(200, 200, 1, 1)),
+                ModalCallbackFunction::create([&](int id) { result = id; if (id == 3) enabled = !enabled; }));
+            popup = nullptr;
+            for (int i = 0; i < desktop.getNumComponents(); ++i)
+                if (desktop.getComponent(i)->getName() == "menu") popup = desktop.getComponent(i);
+            require(popup != nullptr, "Startup switch menu did not open");
+            popup->keyPressed(KeyPress(KeyPress::downKey));
+            popup->keyPressed(KeyPress(KeyPress::returnKey));
+            MessageManager::getInstance()->runDispatchLoopUntil(20);
+            require(result == 3 && enabled != initiallyEnabled,
+                    "Selecting the startup switch did not invoke its action once");
+            require(desktop.getNumComponents() == initialWindows,
+                    "Selecting the startup switch left its menu window open");
+        }
+    }
+#endif
+}
+
+void checkImportedBackupRestart()
+{
+    const File parent = File::getSpecialLocation(File::tempDirectory);
+    const File root = parent.getNonexistentChildFile("LightHost-import-restart", "", false);
+    require(root.isAChildOf(parent), "Invalid import restart fixture directory");
+    const File oldApp = root.getChildFile("old-app"), newApp = root.getChildFile("new-app");
+    const File original = oldApp.getChildFile("VST Plugins/import/Existing.vst3");
+    const File restored = newApp.getChildFile("VST Plugins/import/Restored.dll");
+    require(original.getParentDirectory().createDirectory().wasOk()
+            && original.replaceWithText("existing binary")
+            && restored.getParentDirectory().createDirectory().wasOk()
+            && restored.replaceWithText("restored binary"), "Could not prepare import restart fixture");
+    PluginDescription installed;
+    installed.name = "Existing";
+    installed.uid = 10;
+    installed.pluginFormatName = "VST3";
+    installed.fileOrIdentifier = original.getFullPathName();
+    PluginDescription missing(installed);
+    missing.name = "Restored";
+    missing.uid = 11;
+    missing.pluginFormatName = "VST";
+    missing.fileOrIdentifier = oldApp.getChildFile("VST Plugins/import2/Restored.dll").getFullPathName();
+    PluginDescription extracted(missing);
+    extracted.fileOrIdentifier = restored.getFullPathName();
+    KnownPluginList plugins;
+    plugins.addType(installed);
+    plugins.addType(missing);
+    ScopedPointer<XmlElement> listXml(plugins.createXml());
+
+    // Older archives may use legacy keys, and may or may not carry a portable root.
+    for (bool legacy : { false, true })
+        for (bool oldRootPresent : { false, true })
+        {
+            PropertySet settings;
+            settings.setValue("pluginList", listXml);
+            settings.setValue("pluginListActive", listXml);
+            if (oldRootPresent) settings.setValue("portableAppDirectory", oldApp.getFullPathName());
+            for (const auto& plugin : { installed, missing })
+                for (const char* type : { "state", "bypass", "order", "display-name" })
+                    settings.setValue(legacy ? PluginState::legacyKey(type, plugin) : PluginState::key(type, plugin),
+                                      String(type) + " " + plugin.name);
+            StringArray before, after;
+            before.add(installed.fileOrIdentifier); after.add(installed.fileOrIdentifier);
+            before.add(missing.fileOrIdentifier); after.add(extracted.fileOrIdentifier);
+            PluginBackup::prepareImportedSettings(settings, before, after, newApp);
+            ScopedPointer<XmlElement> saved(settings.createXml("PROPERTIES"));
+            PropertySet restarted;
+            restarted.restoreFromXml(*saved);
+            PluginState::relocatePortableSettings(restarted, newApp);
+            PluginState::migrateLegacySettings(restarted, { installed, extracted });
+            for (const auto& plugin : { installed, extracted })
+                for (const char* type : { "state", "bypass", "order", "display-name" })
+                    require(restarted.getValue(PluginState::key(type, plugin)) == String(type) + " " + plugin.name,
+                            "Restart after import lost plugin state, bypass, order, or display name");
+            for (const char* key : { "pluginList", "pluginListActive" })
+            {
+                ScopedPointer<XmlElement> xml(XmlDocument::parse(restarted.getValue(key)));
+                KnownPluginList reloaded;
+                reloaded.recreateFromXml(*xml);
+                require(reloaded.getNumTypes() == 2, "Import restart lost an effect");
+                for (int i = 0; i < reloaded.getNumTypes(); ++i)
+                    require(File(reloaded.getType(i)->fileOrIdentifier).existsAsFile(),
+                            "Import restart rebased an existing or restored plugin to a missing file");
+            }
+            ScopedPointer<XmlElement> oldActive(XmlDocument::parse(restarted.getValue("pluginListActive")));
+            PluginInstances upgraded;
+            upgraded.recreateFromXml(*oldActive);
+            upgraded.migrateLegacySettings(restarted);
+            for (int i = 0; i < upgraded.getNumTypes(); ++i)
+                for (const char* type : { "state", "bypass", "order", "display-name" })
+                    require(restarted.getValue(upgraded.getType(i)->settingsKey(type))
+                            == String(type) + " " + upgraded.getType(i)->name,
+                            "An older imported backup lost settings when upgraded to instance identities");
+            const File movedApp = root.getChildFile("moved-app");
+            PluginState::relocatePortableSettings(restarted, movedApp);
+            PluginDescription moved(extracted);
+            moved.fileOrIdentifier = movedApp.getChildFile("VST Plugins/import/Restored.dll").getFullPathName();
+            require(restarted.getValue(PluginState::key("state", installed)) == "state Existing"
+                    && restarted.getValue(PluginState::key("state", moved)) == "state Restored",
+                    "Moving an imported setup changed an external plugin path or lost portable state");
+        }
+    require(root.deleteRecursively(), "Could not remove import restart fixture");
+}
+
+void checkInstanceMigrationAndIsolation()
+{
+    PluginDescription plugin;
+    plugin.name = "Loud Max";
+    plugin.version = "1.0";
+    plugin.pluginFormatName = "VST3";
+    plugin.fileOrIdentifier = "/plugins/LoudMax.vst3";
+    plugin.uid = 91;
+    KnownPluginList oldList;
+    oldList.addType(plugin);
+    ScopedPointer<XmlElement> oldXml(oldList.createXml());
+    for (bool legacy : { false, true })
+    {
+        PropertySet settings;
+        for (const char* type : { "state", "bypass", "order", "display-name" })
+            settings.setValue(legacy ? PluginState::legacyKey(type, plugin) : PluginState::key(type, plugin),
+                              String(type) + " original");
+        PluginInstances instances;
+        instances.recreateFromXml(*oldXml);
+        PluginState::migrateLegacySettings(settings, PluginState::collectPlugins(oldList, instances));
+        instances.migrateLegacySettings(settings);
+        const PluginInstance first = *instances.getType(0);
+        require(PluginInstance::validId(first.instanceId), "Legacy chain entry did not receive an instance identity");
+        for (const char* type : { "state", "bypass", "order", "display-name" })
+            require(settings.getValue(first.settingsKey(type)) == String(type) + " original",
+                    "Instance migration lost saved settings");
+
+        const auto second = instances.addInstance(plugin, settings);
+        require(second.instanceId != first.instanceId && second.displayName(settings) == "Loud Max 2"
+                && !settings.containsKey(second.settingsKey("state"))
+                && !settings.getBoolValue(second.settingsKey("bypass")),
+                "A second instance shared the first instance's identity or settings");
+        settings.setValue(second.settingsKey("state"), "second configuration");
+        settings.setValue(second.settingsKey("bypass"), true);
+        settings.setValue(first.settingsKey("display-name"), "Input limiter");
+        require(first.displayName(settings) == "Input limiter" && second.displayName(settings) == "Loud Max 2",
+                "Renaming one copy changed the other copy's display name");
+        instances.move(1, 0, settings);
+        require(instances.ordered(settings)[0].instanceId == second.instanceId
+                && settings.getValue(first.settingsKey("state")) == "state original",
+                "Reordering duplicate effects changed their identities or configurations");
+        ScopedPointer<XmlElement> saved(instances.createXml());
+        PluginInstances restarted;
+        restarted.recreateFromXml(*saved);
+        restarted.migrateLegacySettings(settings);
+        require(restarted.getNumTypes() == 2 && restarted.ordered(settings)[0].instanceId == second.instanceId
+                && settings.getValue(second.settingsKey("state")) == "second configuration"
+                && settings.getBoolValue(second.settingsKey("bypass")),
+                "Restart collapsed duplicate effects or lost independent settings");
+        require(restarted.removeInstance(first.instanceId, settings)
+                && restarted.getNumTypes() == 1
+                && restarted.getType(0)->instanceId == second.instanceId
+                && !settings.containsKey(first.settingsKey("state"))
+                && settings.getValue(second.settingsKey("state")) == "second configuration",
+                "Removing one copy removed or changed the other copy");
+        const auto third = restarted.addInstance(plugin, settings);
+        require(third.displayName(settings) == "Loud Max 3", "An added copy reused another instance's display name");
+        saved = restarted.createXml();
+        PluginInstances again;
+        again.recreateFromXml(*saved);
+        again.migrateLegacySettings(settings);
+        require(!settings.containsKey(third.settingsKey("state")),
+                "Restart seeded a fresh instance from obsolete binary-based settings");
+    }
+}
+
+class SnapshotGain : public GainProcessor
+{
+public:
+    explicit SnapshotGain(float value) : GainProcessor(value), setting(value) {}
+    void processBlock(AudioBuffer<float>& audio, MidiBuffer&) override { ++calls; audio.applyGain(setting); }
+    void getStateInformation(MemoryBlock& state) override
+    {
+        MemoryOutputStream output(state, false);
+        output.writeFloat(setting);
+    }
+    void setStateInformation(const void* data, int size) override
+    {
+        if (size == 4) { MemoryInputStream input(data, (size_t) size, false); setting = input.readFloat(); }
+    }
+private:
+    float setting;
+};
+
+void checkDuplicateInstanceAudioAndBackup()
+{
+    PluginDescription plugin;
+    plugin.name = "Gain";
+    plugin.pluginFormatName = "VST3";
+    plugin.fileOrIdentifier = "/plugins/Gain.vst3";
+    plugin.uid = 92;
+    PropertySet settings;
+    PluginInstances instances;
+    const auto first = instances.addInstance(plugin, settings);
+    const auto second = instances.addInstance(plugin, settings);
+    AudioProcessorGraph graph;
+    graph.setPlayConfigDetails(2, 2, 48000, 64);
+    graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioInputNode), PluginChain::inputNodeId);
+    graph.addNode(new AudioProcessorGraph::AudioGraphIOProcessor(AudioProcessorGraph::AudioGraphIOProcessor::audioOutputNode), PluginChain::outputNodeId);
+    auto* firstDsp = new SnapshotGain(0.5f);
+    auto* secondDsp = new SnapshotGain(0.25f);
+    graph.addNode(firstDsp, 41);
+    graph.addNode(secondDsp, 42);
+    auto reconnect = [&]
+    {
+        const auto list = instances.ordered(settings);
+        require(PluginChain::reconnect(graph, (int) list.size(),
+            [&](int i) { return settings.getBoolValue(list[i].settingsKey("bypass")); },
+            [&](int i) { return list[i].instanceId == first.instanceId ? uint32(41) : uint32(42); }).isEmpty(),
+            "Could not connect duplicate-instance fixture");
+    };
+    reconnect(); checkAudio(graph, 0.03125f);
+    settings.setValue(second.settingsKey("bypass"), true);
+    const int secondCalls = secondDsp->calls;
+    reconnect(); checkAudio(graph, 0.125f);
+    require(secondDsp->calls == secondCalls && !firstDsp->isSuspended(),
+            "Bypassing the second copy processed it or suspended the first copy");
+    settings.setValue(second.settingsKey("bypass"), false);
+    instances.move(1, 0, settings);
+    reconnect(); checkAudio(graph, 0.03125f);
+    require(graph.getNodeForId(41)->getProcessor() == firstDsp && graph.getNodeForId(42)->getProcessor() == secondDsp,
+            "Reordering duplicate effects replaced their processors");
+    for (int i = 0; i < 2; ++i)
+    {
+        MemoryBlock state;
+        PluginState::capture(graph, i == 0 ? *firstDsp : *secondDsp, state);
+        settings.setValue((i == 0 ? first : second).settingsKey("state"), state.toBase64Encoding());
+    }
+    require(settings.getValue(first.settingsKey("state")) != settings.getValue(second.settingsKey("state")),
+            "Duplicate processors did not retain different parameter states");
+    ScopedPointer<XmlElement> active(instances.createXml());
+    settings.setValue("pluginListActive", active);
+    KnownPluginList known;
+    known.addType(plugin);
+    ScopedPointer<XmlElement> available(known.createXml());
+    settings.setValue("pluginList", available);
+    require(PluginState::collectPlugins(known, instances).size() == 1,
+            "Backup included the same plugin binary more than once");
+    require(PluginBackup::hasValidPluginLists(settings, true), "Valid multi-instance backup rejected");
+
+    // Exercise the same XML/ZIP payload used by an exported version 3 backup.
+    ScopedPointer<XmlElement> xml(settings.createXml("PROPERTIES"));
+    const String payload = xml->createDocument(String(), true);
+    ZipFile::Builder builder;
+    builder.addEntry(new MemoryInputStream(payload.toRawUTF8(), payload.getNumBytesAsUTF8(), true), 6, "settings.xml", Time::getCurrentTime());
+    MemoryOutputStream bytes;
+    require(builder.writeToStream(bytes, nullptr), "Could not archive multi-instance settings");
+    MemoryInputStream input(bytes.getData(), bytes.getDataSize(), false);
+    ZipFile archive(input);
+    ScopedPointer<InputStream> restoredStream(archive.createStreamForEntry(archive.getIndexOfFileName("settings.xml")));
+    ScopedPointer<XmlElement> restoredXml(XmlDocument::parse(restoredStream->readEntireStreamAsString()));
+    PropertySet imported;
+    imported.restoreFromXml(*restoredXml);
+    StringArray oldPaths, newPaths;
+    oldPaths.add(plugin.fileOrIdentifier); newPaths.add("/restored/Gain.vst3");
+    const File destination = File::getSpecialLocation(File::tempDirectory).getChildFile("instance-import");
+    PluginBackup::prepareImportedSettings(imported, oldPaths, newPaths, destination);
+    PluginState::relocatePortableSettings(imported, destination);
+    ScopedPointer<XmlElement> importedList(XmlDocument::parse(imported.getValue("pluginListActive")));
+    PluginInstances restored;
+    restored.recreateFromXml(*importedList);
+    restored.migrateLegacySettings(imported);
+    require(restored.getNumTypes() == 2 && restored.ordered(imported)[0].instanceId == second.instanceId,
+            "Backup restore collapsed instances or lost their order");
+    for (const auto& entry : restored.ordered(imported))
+    {
+        require(entry.fileOrIdentifier == "/restored/Gain.vst3", "Restored instance did not follow its binary");
+        MemoryBlock state;
+        state.fromBase64Encoding(imported.getValue(entry.settingsKey("state")));
+        SnapshotGain processor(1.0f);
+        processor.setStateInformation(state.getData(), (int) state.getSize());
+        AudioBuffer<float> audio(2, 1);
+        audio.setSample(0, 0, 1); audio.setSample(1, 0, 1);
+        MidiBuffer midi;
+        processor.processBlock(audio, midi);
+        require(audio.getSample(0, 0) == (entry.instanceId == first.instanceId ? 0.5f : 0.25f),
+                "Restored copies shared or lost their parameter configurations");
+    }
+    importedList->getChildElement(1)->setAttribute("instanceId", importedList->getChildElement(0)->getStringAttribute("instanceId"));
+    imported.setValue("pluginListActive", importedList);
+    require(!PluginBackup::hasValidPluginLists(imported, true), "Backup accepted shared instance identities");
+    importedList->getChildElement(1)->removeAttribute("instanceId");
+    imported.setValue("pluginListActive", importedList);
+    require(!PluginBackup::hasValidPluginLists(imported, true), "Version 3 backup accepted a missing identity");
+    require(instances.removeInstance(first.instanceId, settings), "Could not remove the first processor instance");
+    graph.removeNode(41);
+    reconnect(); checkAudio(graph, 0.0625f);
+    require(graph.getNodeForId(42)->getProcessor() == secondDsp,
+            "Removing one copy replaced the surviving copy's processor");
+}
 }
 
 int main()
@@ -590,10 +1055,20 @@ int main()
         checkBackups();
         checkUnsupportedLayoutAndEditor();
         checkSynchronizedStateCapture();
+        checkPluginLibraryActions();
+        checkBypassPresentation();
+        checkPopupTransparency();
+        checkImportedBackupRestart();
+        checkInstanceMigrationAndIsolation();
+        checkDuplicateInstanceAudioAndBackup();
         std::cout << "PASS: stereo routing, bypass CPU work, resume, instance preservation, missing plugins\n";
         std::cout << "PASS: stable node IDs, reorder/add/remove DSP preservation, selective editor cleanup, background backup and cancellation\n";
         std::cout << "PASS: stereo channel migration, invalid-output containment, device diagnostics\n";
         std::cout << "PASS: plugin identity migration, backup round trips, active-only backups, editor reuse, unsupported layouts, state synchronization\n";
+        std::cout << "PASS: inline library metadata and search, filtered removal preserving active copies, independent adds, stale results, selection clearing\n";
+        std::cout << "PASS: tooltip-free library, shared startup switches with keyboard activation, transparent menus and dismissal cleanup\n";
+        std::cout << "PASS: bypass indication for loaded and missing effects; legacy and current backup imports survive restart and later moves\n";
+        std::cout << "PASS: independent instance migration, fresh defaults, rename/order/removal isolation, duplicate DSP bypass, version 3 backup configurations\n";
         return 0;
     }
     catch (const std::exception& error)

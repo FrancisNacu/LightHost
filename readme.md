@@ -7,6 +7,18 @@ A simple VST/AU host for OS X, Windows, and Linux that sits in the menu/task bar
 
 See [#1](https://github.com/rolandoislas/LightHost/issues/1)
 
+### Interface
+
+The Windows interface uses a native title bar, Segoe UI, and a minimal light theme. **Signal chain** shows effects in processing order between the selected input and output devices. Drag an effect by its grip to reorder it, use its power control to bypass or enable it, and double-click it or press Enter to open its editor. The ellipsis menu contains rename and remove actions. Unavailable effects are marked in the chain.
+
+The host uses one shared theme for library, plugin, tray, and device menus, with rounded surfaces, consistent row spacing, keyboard selection, and red destructive actions. Scrollbars share the same slim rounded thumb across the chain, library, settings, and dialogs. Fields, buttons, and progress indicators use the same typography, colors, and focus treatment. Host tooltips are disabled.
+
+The adjacent **Plugin library** shows each effect's manufacturer, format, category, and version directly in its row. Search matches those details, names, and descriptions. Use an effect's **+** button or select it and press Enter to add an independent instance. You can add the same effect repeatedly; additional copies start with the plugin's defaults and receive names such as **LoudMax 2**. Each copy has its own parameters, bypass state, display name, editor, and chain position. The library shows how many copies are in the chain. **Scan for plugins...** starts the scanner directly, and **Library options...** provides sorting, removal, folder reveal, and retrying skipped plugins in the same panel. You can also drop plugin files into the library. Selecting a library row and pressing **Delete** removes its library entry while retaining active copies and installed files. **Ctrl+F** focuses library search. With a chain row focused, **Space** toggles bypass, **F2** renames, **Delete** removes, and **Ctrl+Up/Down** reorders it.
+
+Effect cards show **Active**, **Bypassed**, or **Unavailable**. A missing effect still shows its saved bypass state; its power control changes between amber (enabled but unavailable) and gray (bypassed). The more compact cards and explicit Windows font weights keep longer chains readable with less scrolling.
+
+**Settings** uses a sliders icon and groups audio configuration, startup and tray preferences, backup actions, and saved plugin state reset. **Run on startup** uses the same switch in Settings and the right-click tray menu; both reflect the current Windows startup registration. The sidebar reports the current audio device's running state, sample rate, and buffer size. Closing the main window keeps the host running in the system tray; use the tray menu to quit.
+
 ### Backup and restore
 
 Configuration and audio logs are stored in the `Data` folder beside the executable, regardless of the working directory or shortcut used to launch it. Existing settings and logs beside the executable move there automatically. AppData and previous executable locations are never searched for settings. Backup dialogs also default to the executable's directory. To preserve your setup when moving the app, move the executable, `Data`, and `VST Plugins` together into a writable directory. Moving only the executable uses the destination folder's configuration, or creates fresh settings there if none exist. Plugin paths inside the app folder and their saved states follow the new location automatically; externally installed plugins retain their existing paths.
@@ -14,6 +26,8 @@ Configuration and audio logs are stored in the `Data` folder beside the executab
 Open Settings from the Light Host tray window and choose **Export backup...** to create a `.lightbak` file containing your Light Host settings, plugin list, active plugin states, audio device settings, and discovered file-based plugin binaries. Choose **Import backup...** to restore the settings and missing plugin files into the `VST Plugins` folder beside the executable. Light Host automatically reloads after a successful import to apply the restored settings. Import accepts only `.lightbak` files, which use ZIP compression internally.
 
 Existing plugin files are never overwritten. Plugin installers, license data, external dependencies, and plugins managed by the operating system are not included; those may need to be installed or authorized separately. Backups can be large, and plugin binaries may be subject to their authors' license terms.
+
+Import resets the backup's portable app location after resolving plugin paths. This prevents a restart from moving references to an existing installation into a folder where the plugin files do not exist. Original version 1 and version 2 backups remain supported, with saved effect states, names, order, and bypass settings preserved.
 
 ### Windows build
 
@@ -30,6 +44,8 @@ To build the 64-bit Windows executable locally:
 
 The script downloads the pinned JUCE and Steinberg VST3 SDK revisions into `lib/` if they are not already present, builds Projucer, generates the Visual Studio project, and builds the application in Release mode. The executable is written to `Builds/Windows/Release/Light Host.exe`. To build Debug instead, add `-Configuration Debug` to the command.
 
+To build alongside a running executable, use a separate destination, for example `-OutputPath Builds\Windows\UpdatedRelease`.
+
 The build retains VST3 hosting. ASIO is enabled when the Steinberg ASIO SDK is found at `lib/ASIOSDK`, `C:\Dev\SDKs\ASIOSDK`, or the location specified by `ASIO_SDK_PATH`. You can also pass `-AsioSdkPath C:\path\to\ASIOSDK`. If the SDK is unavailable, the script builds without ASIO and prints a warning. Obtain the SDK from Steinberg and follow its license terms. Generated build output, JUCE project files, and downloaded dependencies are ignored by Git.
 
 Add `-RunTests` to build and run the audio routing regression checks. These use in-memory stereo buffers without opening an audio device. They verify empty-chain passthrough, chained processing, bypass/resume, preservation of plugin instances, and missing-plugin handling. They also verify that bypassed plugins receive no processing calls. Test binaries are written to `Builds/Tests/Release/` (or `Debug/`).
@@ -44,7 +60,7 @@ Audio diagnostics are saved as `Data/Light Host.audio.log` beside the executable
 
 The regression checks also cover channel migration, invalid-output containment, processing overruns, and propagation of rate/buffer changes when a device restarts. Physical ASIO recovery and third-party plugin behavior still require testing with the actual device and plugins.
 
-Plugin state, order, bypass, and display names use the plugin format, ID, and full location as their identity; existing settings are migrated automatically. Version 2 backups include both available and active plugins, preserve single-file versus bundle layouts, and remap identity-based settings when restoring to another location. Original version 1 backups without a layout flag remain supported. Older app versions cannot restore version 2 backups.
+Each active effect has a persistent instance identity for its state, order, bypass, and display name. Existing settings are migrated automatically. Version 3 backups preserve independent copies of the same effect, include each plugin binary once, and retain single-file versus bundle layouts. Version 1 and version 2 backups remain supported, including original backups without a layout flag. Older app versions cannot restore version 3 backups.
 
 Only effects with at least two input and two output channels are supported in the stereo chain. Other layouts are skipped with a warning, and the remaining chain continues passing audio. Plugin state snapshots synchronize with processing in graph-then-processor lock order; a plugin with a slow state callback can briefly interrupt audio during saving.
 

@@ -24,25 +24,22 @@ inline String legacyKey(const String& type, const PluginDescription& plugin)
     return "plugin-" + type + "-" + plugin.name + plugin.version + plugin.pluginFormatName;
 }
 
-inline std::vector<PluginDescription> collectPlugins(const KnownPluginList& known,
-                                                      const KnownPluginList& active)
+template <typename ActiveList>
+std::vector<PluginDescription> collectPlugins(const KnownPluginList& known, const ActiveList& active)
 {
     std::vector<PluginDescription> result;
-    for (const auto* list : { &known, &active })
-        for (int i = 0; i < list->getNumTypes(); ++i)
-        {
-            const PluginDescription& plugin = *list->getType(i);
-            bool found = false;
-            for (auto& existing : result)
-                if (existing.isDuplicateOf(plugin) && existing.pluginFormatName == plugin.pluginFormatName)
-                {
-                    existing = plugin; // Prefer the active instance's metadata.
-                    found = true;
-                    break;
-                }
-            if (!found)
-                result.push_back(plugin);
-        }
+    const auto append = [&](const PluginDescription& plugin)
+    {
+        for (auto& existing : result)
+            if (existing.isDuplicateOf(plugin) && existing.pluginFormatName == plugin.pluginFormatName)
+            {
+                existing = plugin;
+                return;
+            }
+        result.push_back(plugin);
+    };
+    for (int i = 0; i < known.getNumTypes(); ++i) append(*known.getType(i));
+    for (int i = 0; i < active.getNumTypes(); ++i) append(*active.getType(i));
     return result;
 }
 
