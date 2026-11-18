@@ -17,10 +17,12 @@ public:
 
     static void closeAllCurrentlyOpenWindows();
     static void closeWindowsFor(AudioProcessorGraph::Node*);
+    static void setTitleFor(AudioProcessorGraph::Node*, const String&);
     static bool containsActiveWindows();
 
     void moved() override;
     void closeButtonPressed() override;
+    void lookAndFeelChanged() override;
 
 private:
     AudioProcessorGraph::Node* owner;

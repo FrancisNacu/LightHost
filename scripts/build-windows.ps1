@@ -2,6 +2,7 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
     [string]$AsioSdkPath,
+    [string]$OutputPath,
     [switch]$RunTests
 )
 
@@ -101,6 +102,39 @@ if (-not ([System.IO.File]::ReadAllText($asioSource)).Contains('Keep the first r
 else {
     Invoke-CheckedCommand -FilePath 'git' -Arguments @(
         '-C', $jucePath, 'apply', '--reverse', '--check', '--ignore-space-change', $asioPatch
+    )
+}
+
+# JUCE 4 hardcodes menu border padding; reserve the rounded surface's shadow margin.
+$popupPatch = Join-Path $repositoryRoot 'patches\juce-popup-surface.patch'
+$popupSource = Join-Path $jucePath 'modules\juce_gui_basics\menus\juce_PopupMenu.cpp'
+if (-not ([System.IO.File]::ReadAllText($popupSource)).Contains('Light Host paints rounded shadows')) {
+    Invoke-CheckedCommand -FilePath 'git' -Arguments @(
+        '-C', $jucePath, 'apply', '--check', '--ignore-space-change', $popupPatch
+    )
+    Invoke-CheckedCommand -FilePath 'git' -Arguments @(
+        '-C', $jucePath, 'apply', '--ignore-space-change', $popupPatch
+    )
+}
+else {
+    Invoke-CheckedCommand -FilePath 'git' -Arguments @(
+        '-C', $jucePath, 'apply', '--reverse', '--check', '--ignore-space-change', $popupPatch
+    )
+}
+
+# Keep actionable popup rows consistent with the host's clickable controls.
+$popupCursorPatch = Join-Path $repositoryRoot 'patches\juce-popup-cursor.patch'
+if (-not ([System.IO.File]::ReadAllText($popupSource)).Contains('Light Host uses a hand only')) {
+    Invoke-CheckedCommand -FilePath 'git' -Arguments @(
+        '-C', $jucePath, 'apply', '--check', '--ignore-space-change', $popupCursorPatch
+    )
+    Invoke-CheckedCommand -FilePath 'git' -Arguments @(
+        '-C', $jucePath, 'apply', '--ignore-space-change', $popupCursorPatch
+    )
+}
+else {
+    Invoke-CheckedCommand -FilePath 'git' -Arguments @(
+        '-C', $jucePath, 'apply', '--reverse', '--check', '--ignore-space-change', $popupCursorPatch
     )
 }
 
@@ -426,6 +460,13 @@ try {
     }
 
     $outputDirectory = Join-Path $repositoryRoot "Builds\Windows\$Configuration"
+    if ($OutputPath) {
+        $outputDirectory = if ([System.IO.Path]::IsPathRooted($OutputPath)) {
+            [System.IO.Path]::GetFullPath($OutputPath)
+        } else {
+            [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot $OutputPath))
+        }
+    }
     New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
     $solutionPath = Join-Path $repositoryRoot 'Builds\VisualStudio2015\Light Host.sln'
     Invoke-CheckedCommand -FilePath $msbuildPath -Arguments @(
